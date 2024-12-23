@@ -11,9 +11,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from inferno.ltx_engine.model.patchifier import patchify, unpatchify
-from inferno.ltx_engine.model.transformer import Attention
-from inferno.ltx_engine.model.utils import TimestepEmbedding, Timesteps
+from model.patchifier import patchify, unpatchify
+from model.transformer import Attention
+from model.utils import TimestepEmbedding, Timesteps
 import logging
 
 logger = logging.getLogger(__name__)

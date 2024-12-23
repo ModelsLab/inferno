@@ -19,9 +19,9 @@ from torch.nn import functional
 
 from diffusers.utils import logging
 
-from inferno.ltx_engine.model.autoencoder import make_conv_nd, make_linear_nd
-from inferno.ltx_engine.model.autoencoder import PixelNorm
-from inferno.ltx_engine.model.autoencoder import AutoencoderKL as AutoencoderKLWrapper
+from model.autoencoder import make_conv_nd, make_linear_nd
+from model.autoencoder import PixelNorm
+from model.autoencoder import AutoencoderKL as AutoencoderKLWrapper
 
 try:
     import torch_xla.core.xla_model as xm

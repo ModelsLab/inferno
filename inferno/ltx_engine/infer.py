@@ -13,14 +13,14 @@ from PIL import Image
 from transformers import T5EncoderModel, T5Tokenizer
 from enum import Enum, auto
 
-from inferno.ltx_engine.model.autoencoder import (
+from model.autoencoder import (
     CausalVideoAutoencoder,
 )
-from inferno.ltx_engine.model.patchifier import Patchifier
-from inferno.ltx_engine.model.transformer import Transformer3DModel
-from inferno.ltx_engine.pipeline.ltx_infer_pipeline import LTXVideoPipeline
-from inferno.ltx_engine.scheduler.scheduler import RectifiedFlowScheduler
-from inferno.ltx_engine.pipeline.models import ConditioningMethod
+from model.patchifier import Patchifier
+from model.transformer import Transformer3DModel
+from pipeline.ltx_infer_pipeline import LTXVideoPipeline
+from scheduler.scheduler import RectifiedFlowScheduler
+from pipeline.models import ConditioningMethod
 
 MAX_HEIGHT = 720
 MAX_WIDTH = 1280

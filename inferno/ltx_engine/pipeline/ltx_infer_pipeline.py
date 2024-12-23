@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 from contextlib import nullcontext
 from diffusers.image_processor import VaeImageProcessor
-from inferno.ltx_engine.model.autoencoder import AutoencoderKL
+from model.autoencoder import AutoencoderKL
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline, ImagePipelineOutput
 from diffusers.schedulers import DPMSolverMultistepScheduler
 from diffusers.utils import (
@@ -24,16 +24,16 @@ from diffusers.utils.torch_utils import randn_tensor
 from einops import rearrange
 from transformers import T5EncoderModel, T5Tokenizer
 
-from inferno.ltx_engine.model.transformer import Transformer3DModel
-from inferno.ltx_engine.model.patchifier import BasePatchifier
-from inferno.ltx_engine.pipeline.utils import (
+from model.transformer import Transformer3DModel
+from model.patchifier import BasePatchifier
+from pipeline.utils import (
     get_vae_size_scale_factor,
     vae_decode,
     vae_encode,
 )
-from inferno.ltx_engine.model.autoencoder import CausalVideoAutoencoder
-from inferno.ltx_engine.pipeline.models import ConditioningMethod
-from inferno.ltx_engine.scheduler.scheduler import TimestepShifter
+from model.autoencoder import CausalVideoAutoencoder
+from pipeline.models import ConditioningMethod
+from scheduler.scheduler import TimestepShifter
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name

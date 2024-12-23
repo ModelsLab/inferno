@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from inferno.ltx_engine.utils.model_builder import maybe_allow_in_graph
+from utils.model_builder import maybe_allow_in_graph
 
 try:
     from torch_xla.experimental.custom_kernel import flash_attention

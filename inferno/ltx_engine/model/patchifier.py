@@ -4,7 +4,7 @@ import torch
 from torch import Tensor
 from einops import rearrange
 
-from inferno.ltx_engine.utils.model_builder import append_dims
+from utils.model_builder import append_dims
 
 
 class BasePatchifier(ABC):
