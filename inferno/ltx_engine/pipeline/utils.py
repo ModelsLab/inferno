@@ -1,10 +1,10 @@
 import torch
-from inferno.ltx_engine.model.autoencoder import AutoencoderKL
+from model.autoencoder import AutoencoderKL
 from einops import rearrange
 from torch import Tensor
 
 
-from inferno.ltx_engine.model.autoencoder import CausalVideoAutoencoder
+from model.autoencoder import CausalVideoAutoencoder
 
 import json
 import os

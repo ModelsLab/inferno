@@ -7,10 +7,10 @@ from transformers import (
     T5EncoderModel,
     T5Tokenizer
 )
-from inferno.ltx_engine.model.autoencoder import CausalVideoAutoencoder
-from inferno.ltx_engine.model.transformer import Transformer3DModel
-from inferno.ltx_engine.model.patchifier import Patchifier
-from inferno.ltx_engine.scheduler.scheduler import RectifiedFlowScheduler
+from model.autoencoder import CausalVideoAutoencoder
+from model.transformer import Transformer3DModel
+from model.patchifier import Patchifier
+from scheduler.scheduler import RectifiedFlowScheduler
 
 try:
     from torch._dynamo import allow_in_graph as maybe_allow_in_graph
