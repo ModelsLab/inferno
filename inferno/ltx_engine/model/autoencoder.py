@@ -1602,7 +1602,6 @@ class CausalVideoAutoencoder(AutoencoderKL):
         
         # Override any config values with kwargs
         config.update((k, v) for k, v in kwargs.items() if v is not None)
-        
         return config
 
     @classmethod
@@ -1645,6 +1644,76 @@ class CausalVideoAutoencoder(AutoencoderKL):
 
         return video_vae
 
+    @staticmethod
+    def from_config(config: dict):
+        """Create a CausalVideoAutoencoder instance from a config dictionary."""
+        assert config["_class_name"] == "CausalVideoAutoencoder"
+        
+        # Determine dimensionality based on config
+        dims = (2, 1) if any(config.get("spatio_temporal_scaling", [])) else 2
+        
+        # Create encoder blocks configuration
+        encoder_blocks = []
+        for i, (is_scaling, channels, layers) in enumerate(zip(
+            config.get("spatio_temporal_scaling", []),
+            config["block_out_channels"],
+            config["layers_per_block"]
+        )):
+            if is_scaling:
+                encoder_blocks.append(("compress_all", {"multiplier": 2}))
+            encoder_blocks.append(("res_x", {"num_layers": layers}))
+            if i < len(config["block_out_channels"]) - 1:
+                encoder_blocks.append(("res_x_y", {"multiplier": 2}))
+
+        # Create decoder blocks by reversing encoder structure
+        decoder_blocks = []
+        for i, (is_scaling, channels, layers) in enumerate(reversed(list(zip(
+            config.get("spatio_temporal_scaling", []),
+            config["block_out_channels"],
+            config["layers_per_block"][:-1]  # Remove last layer as it's specific to encoder
+        )))):
+            if i > 0:
+                decoder_blocks.append(("res_x_y", {"multiplier": 2}))
+            decoder_blocks.append(("res_x", {"num_layers": layers}))
+            if is_scaling:
+                decoder_blocks.append(("compress_all", {"multiplier": 2, "residual": True}))
+
+        # Initialize encoder
+        encoder = Encoder(
+            dims=dims,
+            in_channels=config["in_channels"],
+            out_channels=config["latent_channels"],
+            blocks=encoder_blocks,
+            base_channels=config["block_out_channels"][0],
+            patch_size=config["patch_size"],
+            norm_layer="group_norm",  # Using default from config
+            latent_log_var="none"  # Using default setting
+        )
+
+        # Initialize decoder
+        decoder = Decoder(
+            dims=dims,
+            in_channels=config["latent_channels"],
+            out_channels=config["out_channels"],
+            blocks=decoder_blocks,
+            base_channels=config["block_out_channels"][-1],
+            layers_per_block=2,  # Default value
+            patch_size=config["patch_size"],
+            norm_layer="group_norm",
+            causal=config.get("decoder_causal", False),
+            timestep_conditioning=config.get("timestep_conditioning", False)
+        )
+
+        # Create model instance
+        model = CausalVideoAutoencoder(
+            encoder=encoder,
+            decoder=decoder,
+            latent_channels=config["latent_channels"],
+            scaling_factor=config.get("scaling_factor", 1.0)
+        )
+        
+        return model
+
     def __init__(
         self,
         encoder: Encoder,
@@ -1652,7 +1721,6 @@ class CausalVideoAutoencoder(AutoencoderKL):
         latent_channels: int,
         scaling_factor: float = 1.0,
     ):
-        """Initialize CausalVideoAutoencoder."""
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
@@ -1660,58 +1728,8 @@ class CausalVideoAutoencoder(AutoencoderKL):
         self.scaling_factor = scaling_factor
         
         # Calculate dimensions based on encoder configuration
-        if hasattr(encoder, "spatio_temporal_scaling"):
-            self.dims = (2, 1) if any(encoder.spatio_temporal_scaling) else 2
-        else:
-            self.dims = 2  # Default to 2D if no temporal scaling
-
-    @staticmethod
-    def from_config(config: dict):
-        """Create a CausalVideoAutoencoder instance from a config dictionary."""
-        # Validate config
-        assert config["_class_name"] == "CausalVideoAutoencoder", (
-            "config must have _class_name=CausalVideoAutoencoder"
-        )
-        
-        # Set up encoder configuration
-        encoder_config = {
-            "in_channels": config["in_channels"],
-            "out_channels": config["latent_channels"],
-            "block_out_channels": config["block_out_channels"],
-            "layers_per_block": config["layers_per_block"],
-            "patch_size": config["patch_size"],
-            "patch_size_t": config.get("patch_size_t", 1),
-            "norm_eps": config.get("resnet_norm_eps", 1e-6),
-            "causal": config.get("encoder_causal", False),
-            "spatio_temporal_scaling": config.get("spatio_temporal_scaling", 
-                                                [True] * len(config["block_out_channels"]))
-        }
-        
-        # Set up decoder configuration
-        decoder_config = {
-            "in_channels": config["latent_channels"],
-            "out_channels": config["out_channels"],
-            "block_out_channels": list(reversed(config["block_out_channels"])),
-            "layers_per_block": list(reversed(config["layers_per_block"][:-1])),
-            "patch_size": config["patch_size"],
-            "patch_size_t": config.get("patch_size_t", 1),
-            "norm_eps": config.get("resnet_norm_eps", 1e-6),
-            "causal": config.get("decoder_causal", False),
-            "spatio_temporal_scaling": list(reversed(config.get("spatio_temporal_scaling", 
-                                                              [True] * len(config["block_out_channels"]))))
-        }
-        
-        # Create encoder and decoder
-        encoder = Encoder(**encoder_config)
-        decoder = Decoder(**decoder_config)
-        
-        # Initialize model
-        return CausalVideoAutoencoder(
-            encoder=encoder,
-            decoder=decoder,
-            latent_channels=config["latent_channels"],
-            scaling_factor=config.get("scaling_factor", 1.0)
-        )
+        self.dims = (2, 1) if any(block[0] in ["compress_time", "compress_all"] 
+                                 for block in self.encoder.blocks_desc) else 2
 
     @property
     def config(self):
@@ -1719,38 +1737,64 @@ class CausalVideoAutoencoder(AutoencoderKL):
         return SimpleNamespace(
             _class_name="CausalVideoAutoencoder",
             _diffusers_version="0.32.0.dev0",
-            block_out_channels=self.encoder.block_out_channels,
+            block_out_channels=self._get_block_channels(),
             decoder_causal=self.decoder.causal,
-            encoder_causal=self.encoder.causal,
-            in_channels=self.encoder.in_channels,
+            encoder_causal=True,  # Always True as per encoder implementation
+            in_channels=self.encoder.conv_in.in_channels // self.encoder.patch_size**2,
             latent_channels=self.latent_channels,
-            layers_per_block=self.encoder.layers_per_block,
-            out_channels=self.decoder.out_channels,
+            layers_per_block=self._get_layers_per_block(),
+            out_channels=self.decoder.conv_out.out_channels // self.decoder.patch_size**2,
             patch_size=self.encoder.patch_size,
-            patch_size_t=self.encoder.patch_size_t,
-            resnet_norm_eps=self.encoder.norm_eps,
+            patch_size_t=1,  # Default as per implementation
+            resnet_norm_eps=1e-6,
             scaling_factor=self.scaling_factor,
-            spatio_temporal_scaling=self.encoder.spatio_temporal_scaling
+            spatio_temporal_scaling=self._get_spatio_temporal_scaling()
         )
+
+    def _get_block_channels(self) -> List[int]:
+        """Extract block channels from encoder structure."""
+        channels = []
+        current_channels = self.encoder.conv_in.out_channels
+        for block in self.encoder.blocks_desc:
+            if isinstance(block[1], dict) and "multiplier" in block[1]:
+                current_channels *= block[1]["multiplier"]
+            channels.append(current_channels)
+        return channels
+
+    def _get_layers_per_block(self) -> List[int]:
+        """Extract number of layers per block."""
+        layers = []
+        for block in self.encoder.blocks_desc:
+            if block[0] == "res_x":
+                num_layers = block[1]["num_layers"] if isinstance(block[1], dict) else block[1]
+                layers.append(num_layers)
+        return layers
+
+    def _get_spatio_temporal_scaling(self) -> List[bool]:
+        """Determine spatio-temporal scaling configuration."""
+        return [block[0] in ["compress_time", "compress_all"] 
+                for block in self.encoder.blocks_desc 
+                if block[0] in ["res_x", "compress_time", "compress_all"]]
 
     @property
     def is_video_supported(self):
         """Check if the model supports video inputs."""
-        return self.dims != 2 or hasattr(self.encoder, "spatio_temporal_scaling")
+        return self.dims != 2
 
     @property
     def spatial_downscale_factor(self):
         """Get the spatial downscaling factor."""
-        spatial_scaling = [s for s, is_spatial in zip(self.encoder.block_out_channels, 
-                         self.encoder.spatio_temporal_scaling) if is_spatial]
-        return 2 ** len(spatial_scaling) * self.encoder.patch_size
+        return (
+            2 ** len([block for block in self.encoder.blocks_desc 
+                     if block[0] in ["compress_space", "compress_all"]])
+            * self.encoder.patch_size
+        )
 
     @property
     def temporal_downscale_factor(self):
         """Get the temporal downscaling factor."""
-        temporal_scaling = [s for s, is_temporal in zip(self.encoder.block_out_channels, 
-                          self.encoder.spatio_temporal_scaling) if is_temporal]
-        return 2 ** len(temporal_scaling) * self.encoder.patch_size_t
+        return 2 ** len([block for block in self.encoder.blocks_desc 
+                        if block[0] in ["compress_time", "compress_all"]])
 
     def to_json_string(self) -> str:
         """Convert configuration to JSON string."""
@@ -1760,27 +1804,24 @@ class CausalVideoAutoencoder(AutoencoderKL):
         """Load a state dictionary with key mapping support."""
         per_channel_statistics_prefix = "per_channel_statistics."
         ckpt_state_dict = {
-            key: value
-            for key, value in state_dict.items()
+            key: value for key, value in state_dict.items()
             if not key.startswith(per_channel_statistics_prefix)
         }
 
         model_keys = set(name for name, _ in self.named_parameters())
-
         key_mapping = {
             ".resnets.": ".res_blocks.",
             "downsamplers.0": "downsample",
             "upsamplers.0": "upsample",
         }
+        
         converted_state_dict = {}
         for key, value in ckpt_state_dict.items():
             for k, v in key_mapping.items():
                 key = key.replace(k, v)
 
             if "norm" in key and key not in model_keys:
-                logger.info(
-                    f"Removing key {key} from state_dict as it is not present in the model"
-                )
+                logger.info(f"Removing key {key} from state_dict as it is not present in the model")
                 continue
 
             converted_state_dict[key] = value
@@ -1803,9 +1844,6 @@ class CausalVideoAutoencoder(AutoencoderKL):
         """Get the last layer of the model."""
         if hasattr(self.decoder, "conv_out"):
             if isinstance(self.decoder.conv_out, nn.Sequential):
-                last_layer = self.decoder.conv_out[-1]
-            else:
-                last_layer = self.decoder.conv_out
-        else:
-            last_layer = self.decoder.layers[-1]
-        return last_layer
+                return self.decoder.conv_out[-1]
+            return self.decoder.conv_out
+        return self.decoder.layers[-1]
