@@ -9,7 +9,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from utils.model_builder import maybe_allow_in_graph
+try:
+    from torch._dynamo import allow_in_graph as maybe_allow_in_graph
+except (ImportError, ModuleNotFoundError):
+
+    def maybe_allow_in_graph(cls):
+        return cls
 
 try:
     from torch_xla.experimental.custom_kernel import flash_attention

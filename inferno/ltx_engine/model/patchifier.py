@@ -4,7 +4,7 @@ import torch
 from torch import Tensor
 from einops import rearrange
 
-from utils.model_builder import append_dims
+from model.utils import append_dims
 
 
 class BasePatchifier(ABC):

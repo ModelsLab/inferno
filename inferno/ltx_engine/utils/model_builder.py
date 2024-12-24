@@ -12,25 +12,9 @@ from model.transformer import Transformer3DModel
 from model.patchifier import Patchifier
 from scheduler.scheduler import RectifiedFlowScheduler
 
-try:
-    from torch._dynamo import allow_in_graph as maybe_allow_in_graph
-except (ImportError, ModuleNotFoundError):
-
-    def maybe_allow_in_graph(cls):
-        return cls
-
 def get_device():
     """Get the appropriate device (CUDA or CPU)."""
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-def append_dims(x: torch.Tensor, target_dims: int):
-    """Appends dimensions to the end of a tensor until it has target_dims dimensions."""
-    dims_to_append = target_dims - x.ndim
-    if dims_to_append < 0:
-        raise ValueError(f'input has {x.ndim} dims but target_dims is {target_dims}, which is less')
-    elif dims_to_append == 0:
-        return x
-    return x[(...,) + (None,) * dims_to_append]
 
 def load_vae(vae_dir, device):
     """
