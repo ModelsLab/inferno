@@ -5,7 +5,7 @@ from typing import Optional, Tuple, Union
 import torch
 from torch import Tensor
 
-from utils.model_builder import append_dims
+from scheduler.utils import append_dims
 
 
 def simple_diffusion_resolution_dependent_timestep_shift(
