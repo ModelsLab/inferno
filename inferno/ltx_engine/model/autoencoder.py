@@ -1594,6 +1594,17 @@ class Decoder(nn.Module):
 
 class CausalVideoAutoencoder(AutoencoderKL):
     @classmethod
+    def load_config(cls, config_path: Union[str, os.PathLike], **kwargs) -> dict:
+        """Load configuration from a JSON file."""
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        
+        # Override any config values with kwargs
+        config.update((k, v) for k, v in kwargs.items() if v is not None)
+        
+        return config
+
+    @classmethod
     def from_pretrained(
         cls,
         pretrained_model_name_or_path: Optional[Union[str, os.PathLike]],
@@ -1684,8 +1695,7 @@ class CausalVideoAutoencoder(AutoencoderKL):
             _class_name="CausalVideoAutoencoder",
             dims=self.dims,
             in_channels=self.encoder.conv_in.in_channels // self.encoder.patch_size**2,
-            out_channels=self.decoder.conv_out.out_channels
-            // self.decoder.patch_size**2,
+            out_channels=self.decoder.conv_out.out_channels // self.decoder.patch_size**2,
             latent_channels=self.decoder.conv_in.in_channels,
             encoder_blocks=self.encoder.blocks_desc,
             decoder_blocks=self.decoder.blocks_desc,
@@ -1700,9 +1710,7 @@ class CausalVideoAutoencoder(AutoencoderKL):
 
     @property
     def is_video_supported(self):
-        """
-        Check if the model supports video inputs of shape (B, C, F, H, W). Otherwise, the model only supports 2D images.
-        """
+        """Check if the model supports video inputs of shape (B, C, F, H, W). Otherwise, the model only supports 2D images."""
         return self.dims != 2
 
     @property
@@ -1730,8 +1738,6 @@ class CausalVideoAutoencoder(AutoencoderKL):
         )
 
     def to_json_string(self) -> str:
-        import json
-
         return json.dumps(self.config.__dict__)
 
     def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True):
