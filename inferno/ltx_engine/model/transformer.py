@@ -3,11 +3,15 @@ import math
 import logging
 import numbers
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
+from diffusers.configuration_utils import ConfigMixin, register_to_config
+from diffusers.models.modeling_utils import ModelMixin
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+
+from inferno.ltx_engine.model.utils import TimestepEmbedding
 
 try:
     from torch._dynamo import allow_in_graph as maybe_allow_in_graph
@@ -866,7 +870,7 @@ class PixArtAlphaTextProjection(nn.Module):
         return hidden_states
 
 
-class Transformer3DModel(nn.Module):
+class Transformer3DModel(ModelMixin, ConfigMixin):
     """
     Transformer model for 3D data with support for attention and cross-attention.
     """

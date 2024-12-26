@@ -283,7 +283,7 @@ class Encoder(nn.Module):
             )
             self.down_blocks.append(down_block)
 
-        self.mid_block = UNetMidBlock3D(
+        self.mid_block = LTXMidBlock3D(
             dims=dims,
             in_channels=block_out_channels[-1],
             num_layers=self.layers_per_block,
@@ -452,7 +452,7 @@ class Decoder(nn.Module):
         self.mid_block = None
         self.up_blocks = nn.ModuleList([])
 
-        self.mid_block = UNetMidBlock3D(
+        self.mid_block = LTXMidBlock3D(
             dims=dims,
             in_channels=block_out_channels[-1],
             num_layers=self.layers_per_block,
@@ -590,9 +590,9 @@ class DownEncoderBlock3D(nn.Module):
         return hidden_states
 
 
-class UNetMidBlock3D(nn.Module):
+class LTXMidBlock3D(nn.Module):
     """
-    A 3D UNet mid-block [`UNetMidBlock3D`] with multiple residual blocks.
+    A 3D LTX mid-block [`LTXMidBlock3D`] with multiple residual blocks.
 
     Args:
         in_channels (`int`): The number of input channels.

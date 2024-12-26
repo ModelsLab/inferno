@@ -16,18 +16,18 @@ from model.patchifier import patchify, unpatchify
 from model.transformer import Attention
 from model.utils import TimestepEmbedding, Timesteps
 import logging
+from safetensors import safe_open
+from diffusers.models.autoencoders.vae import DecoderOutput
+from diffusers.models.modeling_outputs import AutoencoderKLOutput
+from diffusers import ConfigMixin, ModelMixin
+from model.utils import (
+    diffusers_and_inferno_config_mapping,
+    make_hashable_key,
+    VAE_KEYS_RENAME_DICT,
+)
 
-logger = logging.getLogger(__name__)
-
-@dataclass
-class DecoderOutput:
-    """Wrapper for decoder outputs."""
-    sample: torch.FloatTensor
-
-@dataclass
-class AutoencoderKLOutput:
-    """Wrapper for autoencoder outputs."""
-    latent_dist: "DiagonalGaussianDistribution"
+PER_CHANNEL_STATISTICS_PREFIX = "per_channel_statistics."
+logger = logging.get_logger(__name__)
 
 class PixArtAlphaCombinedTimestepSizeEmbeddings(nn.Module):
     """
@@ -463,7 +463,7 @@ class DiagonalGaussianDistribution(object):
     def mode(self) -> torch.Tensor:
         return self.mean
     
-class AutoencoderKL(nn.Module):
+class AutoencoderKL(ModelMixin, ConfigMixin):
     """
     Variational Autoencoder (VAE) with KL divergence loss and tiling support.
     """
@@ -789,16 +789,16 @@ class LayerNorm(nn.Module):
         x = rearrange(x, "b d h w c -> b c d h w")
         return x
 
-class UNetMidBlock3D(nn.Module):
+class LTXMidBlock3D(nn.Module):
     """
-    A 3D UNet mid-block [`UNetMidBlock3D`] with multiple residual blocks.
+    A 3D LTX mid-block [`LTXMidBlock3D`] with multiple residual blocks.
     Args:
         in_channels (`int`): The number of input channels.
         dropout (`float`, *optional*, defaults to 0.0): The dropout rate.
         num_layers (`int`, *optional*, defaults to 1): The number of residual blocks.
-        resnet_eps (`float`, *optional*, 1e-6 ): The epsilon value for the resnet blocks.
-        resnet_groups (`int`, *optional*, defaults to 32):
-            The number of groups to use in the group normalization layers of the resnet blocks.
+        LTXResnet_eps (`float`, *optional*, 1e-6 ): The epsilon value for the LTXResnet blocks.
+        LTXResnet_groups (`int`, *optional*, defaults to 32):
+            The number of groups to use in the group normalization layers of the LTXResnet blocks.
         norm_layer (`str`, *optional*, defaults to `group_norm`):
             The normalization layer to use. Can be either `group_norm` or `pixel_norm`.
         inject_noise (`bool`, *optional*, defaults to `False`):
@@ -818,16 +818,16 @@ class UNetMidBlock3D(nn.Module):
         in_channels: int,
         dropout: float = 0.0,
         num_layers: int = 1,
-        resnet_eps: float = 1e-6,
-        resnet_groups: int = 32,
+        LTXResnet_eps: float = 1e-6,
+        LTXResnet_groups: int = 32,
         norm_layer: str = "group_norm",
         inject_noise: bool = False,
         timestep_conditioning: bool = False,
         attention_head_dim: int = -1,
     ):
         super().__init__()
-        resnet_groups = (
-            resnet_groups if resnet_groups is not None else min(in_channels // 4, 32)
+        LTXResnet_groups = (
+            LTXResnet_groups if LTXResnet_groups is not None else min(in_channels // 4, 32)
         )
         self.timestep_conditioning = timestep_conditioning
 
@@ -838,12 +838,12 @@ class UNetMidBlock3D(nn.Module):
 
         self.res_blocks = nn.ModuleList(
             [
-                ResnetBlock3D(
+                LTXResnetBlock3D(
                     dims=dims,
                     in_channels=in_channels,
                     out_channels=in_channels,
-                    eps=resnet_eps,
-                    groups=resnet_groups,
+                    eps=LTXResnet_eps,
+                    groups=LTXResnet_groups,
                     dropout=dropout,
                     norm_layer=norm_layer,
                     inject_noise=inject_noise,
@@ -900,8 +900,8 @@ class UNetMidBlock3D(nn.Module):
             )
 
         if self.attention_blocks:
-            for resnet, attention in zip(self.res_blocks, self.attention_blocks):
-                hidden_states = resnet(
+            for LTXResnet, attention in zip(self.res_blocks, self.attention_blocks):
+                hidden_states = LTXResnet(
                     hidden_states, causal=causal, timesteps=timestep_embed
                 )
 
@@ -947,8 +947,8 @@ class UNetMidBlock3D(nn.Module):
                     batch_size, channel, frames, height, width
                 )
         else:
-            for resnet in self.res_blocks:
-                hidden_states = resnet(
+            for LTXResnet in self.res_blocks:
+                hidden_states = LTXResnet(
                     hidden_states, causal=causal, timesteps=timestep_embed
                 )
 
@@ -1003,9 +1003,9 @@ class DepthToSpaceUpsample(nn.Module):
             x = x + x_in
         return x
     
-class ResnetBlock3D(nn.Module):
+class LTXResnetBlock3D(nn.Module):
     r"""
-    A Resnet block.
+    A LTXResnet block.
     Parameters:
         in_channels (`int`): The number of channels in the input.
         out_channels (`int`, *optional*, default to be `None`):
@@ -1243,17 +1243,17 @@ class Encoder(nn.Module):
                 block_params = {"num_layers": block_params}
 
             if block_name == "res_x":
-                block = UNetMidBlock3D(
+                block = LTXMidBlock3D(
                     dims=dims,
                     in_channels=input_channel,
                     num_layers=block_params["num_layers"],
-                    resnet_eps=1e-6,
-                    resnet_groups=norm_num_groups,
+                    LTXResnet_eps=1e-6,
+                    LTXResnet_groups=norm_num_groups,
                     norm_layer=norm_layer,
                 )
             elif block_name == "res_x_y":
                 output_channel = block_params.get("multiplier", 2) * output_channel
-                block = ResnetBlock3D(
+                block = LTXResnetBlock3D(
                     dims=dims,
                     in_channels=input_channel,
                     out_channels=output_channel,
@@ -1440,22 +1440,22 @@ class Decoder(nn.Module):
                 block_params = {"num_layers": block_params}
 
             if block_name == "res_x":
-                block = UNetMidBlock3D(
+                block = LTXMidBlock3D(
                     dims=dims,
                     in_channels=input_channel,
                     num_layers=block_params["num_layers"],
-                    resnet_eps=1e-6,
-                    resnet_groups=norm_num_groups,
+                    LTXResnet_eps=1e-6,
+                    LTXResnet_groups=norm_num_groups,
                     norm_layer=norm_layer,
                     inject_noise=block_params.get("inject_noise", False),
                     timestep_conditioning=timestep_conditioning,
                 )
             elif block_name == "attn_res_x":
-                block = UNetMidBlock3D(
+                block = LTXMidBlock3D(
                     dims=dims,
                     in_channels=input_channel,
                     num_layers=block_params["num_layers"],
-                    resnet_groups=norm_num_groups,
+                    LTXResnet_groups=norm_num_groups,
                     norm_layer=norm_layer,
                     inject_noise=block_params.get("inject_noise", False),
                     timestep_conditioning=timestep_conditioning,
@@ -1463,7 +1463,7 @@ class Decoder(nn.Module):
                 )
             elif block_name == "res_x_y":
                 output_channel = output_channel // block_params.get("multiplier", 2)
-                block = ResnetBlock3D(
+                block = LTXResnetBlock3D(
                     dims=dims,
                     in_channels=input_channel,
                     out_channels=output_channel,
@@ -1553,7 +1553,7 @@ class Decoder(nn.Module):
             scaled_timesteps = timesteps * self.timestep_scale_multiplier
 
         for up_block in self.up_blocks:
-            if self.timestep_conditioning and isinstance(up_block, UNetMidBlock3D):
+            if self.timestep_conditioning and isinstance(up_block, LTXMidBlock3D):
                 sample = checkpoint_fn(up_block)(
                     sample, causal=self.causal, timesteps=scaled_timesteps
                 )
@@ -1595,233 +1595,227 @@ class Decoder(nn.Module):
 
 class CausalVideoAutoencoder(AutoencoderKL):
     @classmethod
-    def load_config(cls, config_path: Union[str, os.PathLike], **kwargs) -> dict:
-        """Load configuration from a JSON file."""
-        with open(config_path, 'r') as f:
-            config = json.load(f)
-        
-        # Override any config values with kwargs
-        config.update((k, v) for k, v in kwargs.items() if v is not None)
-        return config
-
-    @classmethod
     def from_pretrained(
         cls,
         pretrained_model_name_or_path: Optional[Union[str, os.PathLike]],
+        *args,
         **kwargs,
     ):
-        """Load a pretrained model from a directory."""
-        if not isinstance(pretrained_model_name_or_path, (str, os.PathLike)):
-            raise ValueError("pretrained_model_name_or_path must be a string or PathLike")
-            
         pretrained_model_name_or_path = Path(pretrained_model_name_or_path)
-        
-        config_local_path = pretrained_model_name_or_path / "config.json"
-        config = cls.load_config(config_local_path, **kwargs)
-        video_vae = cls.from_config(config)
-        
-        if "torch_dtype" in kwargs:
-            video_vae.to(kwargs["torch_dtype"])
+        if (
+            pretrained_model_name_or_path.is_dir()
+            and (pretrained_model_name_or_path / "autoencoder.pth").exists()
+        ):
+            config_local_path = pretrained_model_name_or_path / "config.json"
+            config = cls.load_config(config_local_path, **kwargs)
 
-        model_local_path = pretrained_model_name_or_path / "autoencoder.pth"
-        ckpt_state_dict = torch.load(model_local_path, map_location=torch.device("cpu"))
-        video_vae.load_state_dict(ckpt_state_dict)
+            model_local_path = pretrained_model_name_or_path / "autoencoder.pth"
+            state_dict = torch.load(model_local_path, map_location=torch.device("cpu"))
 
-        statistics_local_path = pretrained_model_name_or_path / "per_channel_statistics.json"
-        if statistics_local_path.exists():
-            with open(statistics_local_path, "r") as file:
-                data = json.load(file)
-            transposed_data = list(zip(*data["data"]))
-            data_dict = {
-                col: torch.tensor(vals)
-                for col, vals in zip(data["columns"], transposed_data)
-            }
-            video_vae.register_buffer("std_of_means", data_dict["std-of-means"])
-            video_vae.register_buffer(
-                "mean_of_means",
-                data_dict.get("mean-of-means", torch.zeros_like(data_dict["std-of-means"]))
+            statistics_local_path = (
+                pretrained_model_name_or_path / "per_channel_statistics.json"
+            )
+            if statistics_local_path.exists():
+                with open(statistics_local_path, "r") as file:
+                    data = json.load(file)
+                transposed_data = list(zip(*data["data"]))
+                data_dict = {
+                    col: torch.tensor(vals)
+                    for col, vals in zip(data["columns"], transposed_data)
+                }
+                std_of_means = data_dict["std-of-means"]
+                mean_of_means = data_dict.get(
+                    "mean-of-means", torch.zeros_like(data_dict["std-of-means"])
+                )
+                state_dict[f"{PER_CHANNEL_STATISTICS_PREFIX}std-of-means"] = (
+                    std_of_means
+                )
+                state_dict[f"{PER_CHANNEL_STATISTICS_PREFIX}mean-of-means"] = (
+                    mean_of_means
+                )
+
+        elif pretrained_model_name_or_path.is_dir():
+            config_path = pretrained_model_name_or_path / "vae" / "config.json"
+            with open(config_path, "r") as f:
+                config = make_hashable_key(json.load(f))
+
+            assert config in diffusers_and_inferno_config_mapping, (
+                "Provided diffusers checkpoint config for VAE is not suppported. "
+                "We only support diffusers configs found in Lightricks/LTX-Video."
             )
 
+            config = diffusers_and_inferno_config_mapping[config]
+
+            state_dict_path = (
+                pretrained_model_name_or_path
+                / "vae"
+                / "diffusion_pytorch_model.safetensors"
+            )
+
+            state_dict = {}
+            with safe_open(state_dict_path, framework="pt", device="cpu") as f:
+                for k in f.keys():
+                    state_dict[k] = f.get_tensor(k)
+            for key in list(state_dict.keys()):
+                new_key = key
+                for replace_key, rename_key in VAE_KEYS_RENAME_DICT.items():
+                    new_key = new_key.replace(replace_key, rename_key)
+
+                state_dict[new_key] = state_dict.pop(key)
+
+        elif pretrained_model_name_or_path.is_file() and str(
+            pretrained_model_name_or_path
+        ).endswith(".safetensors"):
+            state_dict = {}
+            with safe_open(
+                pretrained_model_name_or_path, framework="pt", device="cpu"
+            ) as f:
+                metadata = f.metadata()
+                for k in f.keys():
+                    state_dict[k] = f.get_tensor(k)
+            configs = json.loads(metadata["config"])
+            config = configs["vae"]
+
+        video_vae = cls.from_config(config)
+        if "torch_dtype" in kwargs:
+            video_vae.to(kwargs["torch_dtype"])
+        video_vae.load_state_dict(state_dict)
         return video_vae
 
     @staticmethod
-    def from_config(config: dict):
-        """Create a CausalVideoAutoencoder instance from a config dictionary."""
-        assert config["_class_name"] == "CausalVideoAutoencoder"
-        
-        # Determine dimensionality based on config
-        dims = (2, 1) if any(config.get("spatio_temporal_scaling", [])) else 2
-        
-        # Create encoder blocks configuration
-        encoder_blocks = []
-        for i, (is_scaling, channels, layers) in enumerate(zip(
-            config.get("spatio_temporal_scaling", []),
-            config["block_out_channels"],
-            config["layers_per_block"]
-        )):
-            if is_scaling:
-                encoder_blocks.append(("compress_all", {"multiplier": 2}))
-            encoder_blocks.append(("res_x", {"num_layers": layers}))
-            if i < len(config["block_out_channels"]) - 1:
-                encoder_blocks.append(("res_x_y", {"multiplier": 2}))
+    def from_config(config):
+        assert (
+            config["_class_name"] == "CausalVideoAutoencoder"
+        ), "config must have _class_name=CausalVideoAutoencoder"
+        if isinstance(config["dims"], list):
+            config["dims"] = tuple(config["dims"])
 
-        # Create decoder blocks by reversing encoder structure
-        decoder_blocks = []
-        for i, (is_scaling, channels, layers) in enumerate(reversed(list(zip(
-            config.get("spatio_temporal_scaling", []),
-            config["block_out_channels"],
-            config["layers_per_block"][:-1]  # Remove last layer as it's specific to encoder
-        )))):
-            if i > 0:
-                decoder_blocks.append(("res_x_y", {"multiplier": 2}))
-            decoder_blocks.append(("res_x", {"num_layers": layers}))
-            if is_scaling:
-                decoder_blocks.append(("compress_all", {"multiplier": 2, "residual": True}))
+        assert config["dims"] in [2, 3, (2, 1)], "dims must be 2, 3 or (2, 1)"
 
-        # Initialize encoder
+        double_z = config.get("double_z", True)
+        latent_log_var = config.get(
+            "latent_log_var", "per_channel" if double_z else "none"
+        )
+        use_quant_conv = config.get("use_quant_conv", True)
+
+        if use_quant_conv and latent_log_var == "uniform":
+            raise ValueError("uniform latent_log_var requires use_quant_conv=False")
+
         encoder = Encoder(
-            dims=dims,
-            in_channels=config["in_channels"],
+            dims=config["dims"],
+            in_channels=config.get("in_channels", 3),
             out_channels=config["latent_channels"],
-            blocks=encoder_blocks,
-            base_channels=config["block_out_channels"][0],
-            patch_size=config["patch_size"],
-            norm_layer="group_norm",  # Using default from config
-            latent_log_var="none"  # Using default setting
+            blocks=config.get("encoder_blocks", config.get("blocks")),
+            patch_size=config.get("patch_size", 1),
+            latent_log_var=latent_log_var,
+            norm_layer=config.get("norm_layer", "group_norm"),
         )
 
-        # Initialize decoder
         decoder = Decoder(
-            dims=dims,
+            dims=config["dims"],
             in_channels=config["latent_channels"],
-            out_channels=config["out_channels"],
-            blocks=decoder_blocks,
-            base_channels=config["block_out_channels"][-1],
-            layers_per_block=2,  # Default value
-            patch_size=config["patch_size"],
-            norm_layer="group_norm",
-            causal=config.get("decoder_causal", False),
-            timestep_conditioning=config.get("timestep_conditioning", False)
+            out_channels=config.get("out_channels", 3),
+            blocks=config.get("decoder_blocks", config.get("blocks")),
+            patch_size=config.get("patch_size", 1),
+            norm_layer=config.get("norm_layer", "group_norm"),
+            causal=config.get("causal_decoder", False),
+            timestep_conditioning=config.get("timestep_conditioning", False),
         )
 
-        # Create model instance
-        model = CausalVideoAutoencoder(
+        dims = config["dims"]
+        return CausalVideoAutoencoder(
             encoder=encoder,
             decoder=decoder,
             latent_channels=config["latent_channels"],
-            scaling_factor=config.get("scaling_factor", 1.0)
+            dims=dims,
+            use_quant_conv=use_quant_conv,
         )
-        
-        return model
-
-    def __init__(
-        self,
-        encoder: Encoder,
-        decoder: Decoder,
-        latent_channels: int,
-        scaling_factor: float = 1.0,
-    ):
-        super().__init__()
-        self.encoder = encoder
-        self.decoder = decoder
-        self.latent_channels = latent_channels
-        self.scaling_factor = scaling_factor
-        
-        # Calculate dimensions based on encoder configuration
-        self.dims = (2, 1) if any(block[0] in ["compress_time", "compress_all"] 
-                                 for block in self.encoder.blocks_desc) else 2
 
     @property
     def config(self):
-        """Get the current configuration of the model."""
         return SimpleNamespace(
             _class_name="CausalVideoAutoencoder",
-            _diffusers_version="0.32.0.dev0",
-            block_out_channels=self._get_block_channels(),
-            decoder_causal=self.decoder.causal,
-            encoder_causal=True,  # Always True as per encoder implementation
+            dims=self.dims,
             in_channels=self.encoder.conv_in.in_channels // self.encoder.patch_size**2,
-            latent_channels=self.latent_channels,
-            layers_per_block=self._get_layers_per_block(),
-            out_channels=self.decoder.conv_out.out_channels // self.decoder.patch_size**2,
+            out_channels=self.decoder.conv_out.out_channels
+            // self.decoder.patch_size**2,
+            latent_channels=self.decoder.conv_in.in_channels,
+            encoder_blocks=self.encoder.blocks_desc,
+            decoder_blocks=self.decoder.blocks_desc,
+            scaling_factor=1.0,
+            norm_layer=self.encoder.norm_layer,
             patch_size=self.encoder.patch_size,
-            patch_size_t=1,  # Default as per implementation
-            resnet_norm_eps=1e-6,
-            scaling_factor=self.scaling_factor,
-            spatio_temporal_scaling=self._get_spatio_temporal_scaling()
+            latent_log_var=self.encoder.latent_log_var,
+            use_quant_conv=self.use_quant_conv,
+            causal_decoder=self.decoder.causal,
+            timestep_conditioning=self.decoder.timestep_conditioning,
         )
-
-    def _get_block_channels(self) -> List[int]:
-        """Extract block channels from encoder structure."""
-        channels = []
-        current_channels = self.encoder.conv_in.out_channels
-        for block in self.encoder.blocks_desc:
-            if isinstance(block[1], dict) and "multiplier" in block[1]:
-                current_channels *= block[1]["multiplier"]
-            channels.append(current_channels)
-        return channels
-
-    def _get_layers_per_block(self) -> List[int]:
-        """Extract number of layers per block."""
-        layers = []
-        for block in self.encoder.blocks_desc:
-            if block[0] == "res_x":
-                num_layers = block[1]["num_layers"] if isinstance(block[1], dict) else block[1]
-                layers.append(num_layers)
-        return layers
-
-    def _get_spatio_temporal_scaling(self) -> List[bool]:
-        """Determine spatio-temporal scaling configuration."""
-        return [block[0] in ["compress_time", "compress_all"] 
-                for block in self.encoder.blocks_desc 
-                if block[0] in ["res_x", "compress_time", "compress_all"]]
 
     @property
     def is_video_supported(self):
-        """Check if the model supports video inputs."""
+        """
+        Check if the model supports video inputs of shape (B, C, F, H, W). Otherwise, the model only supports 2D images.
+        """
         return self.dims != 2
 
     @property
     def spatial_downscale_factor(self):
-        """Get the spatial downscaling factor."""
         return (
-            2 ** len([block for block in self.encoder.blocks_desc 
-                     if block[0] in ["compress_space", "compress_all"]])
+            2
+            ** len(
+                [
+                    block
+                    for block in self.encoder.blocks_desc
+                    if block[0] in ["compress_space", "compress_all"]
+                ]
+            )
             * self.encoder.patch_size
         )
 
     @property
     def temporal_downscale_factor(self):
-        """Get the temporal downscaling factor."""
-        return 2 ** len([block for block in self.encoder.blocks_desc 
-                        if block[0] in ["compress_time", "compress_all"]])
+        return 2 ** len(
+            [
+                block
+                for block in self.encoder.blocks_desc
+                if block[0] in ["compress_time", "compress_all"]
+            ]
+        )
 
     def to_json_string(self) -> str:
-        """Convert configuration to JSON string."""
+        import json
+
         return json.dumps(self.config.__dict__)
 
     def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True):
-        """Load a state dictionary with key mapping support."""
-        per_channel_statistics_prefix = "per_channel_statistics."
+        if any([key.startswith("vae.") for key in state_dict.keys()]):
+            state_dict = {
+                key.replace("vae.", ""): value
+                for key, value in state_dict.items()
+                if key.startswith("vae.")
+            }
         ckpt_state_dict = {
-            key: value for key, value in state_dict.items()
-            if not key.startswith(per_channel_statistics_prefix)
+            key: value
+            for key, value in state_dict.items()
+            if not key.startswith(PER_CHANNEL_STATISTICS_PREFIX)
         }
 
         model_keys = set(name for name, _ in self.named_parameters())
+
         key_mapping = {
-            ".resnets.": ".res_blocks.",
+            ".LTXResnets.": ".res_blocks.",
             "downsamplers.0": "downsample",
             "upsamplers.0": "upsample",
         }
-        
         converted_state_dict = {}
         for key, value in ckpt_state_dict.items():
             for k, v in key_mapping.items():
                 key = key.replace(k, v)
 
             if "norm" in key and key not in model_keys:
-                logger.info(f"Removing key {key} from state_dict as it is not present in the model")
+                logger.info(
+                    f"Removing key {key} from state_dict as it is not present in the model"
+                )
                 continue
 
             converted_state_dict[key] = value
@@ -1829,21 +1823,31 @@ class CausalVideoAutoencoder(AutoencoderKL):
         super().load_state_dict(converted_state_dict, strict=strict)
 
         data_dict = {
-            key.removeprefix(per_channel_statistics_prefix): value
+            key.removeprefix(PER_CHANNEL_STATISTICS_PREFIX): value
             for key, value in state_dict.items()
-            if key.startswith(per_channel_statistics_prefix)
+            if key.startswith(PER_CHANNEL_STATISTICS_PREFIX)
         }
         if len(data_dict) > 0:
             self.register_buffer("std_of_means", data_dict["std-of-means"])
             self.register_buffer(
                 "mean_of_means",
-                data_dict.get("mean-of-means", torch.zeros_like(data_dict["std-of-means"]))
+                data_dict.get(
+                    "mean-of-means", torch.zeros_like(data_dict["std-of-means"])
+                ),
             )
 
     def last_layer(self):
-        """Get the last layer of the model."""
         if hasattr(self.decoder, "conv_out"):
             if isinstance(self.decoder.conv_out, nn.Sequential):
-                return self.decoder.conv_out[-1]
-            return self.decoder.conv_out
-        return self.decoder.layers[-1]
+                last_layer = self.decoder.conv_out[-1]
+            else:
+                last_layer = self.decoder.conv_out
+        else:
+            last_layer = self.decoder.layers[-1]
+        return last_layer
+
+    def set_use_tpu_flash_attention(self):
+        for block in self.decoder.up_blocks:
+            if isinstance(block, LTXMidBlock3D) and block.attention_blocks:
+                for attention_block in block.attention_blocks:
+                    attention_block.set_use_tpu_flash_attention()

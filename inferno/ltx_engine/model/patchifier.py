@@ -2,12 +2,13 @@ from abc import ABC, abstractmethod
 from typing import Tuple
 import torch
 from torch import Tensor
+from diffusers.configuration_utils import ConfigMixin
 from einops import rearrange
 
 from model.utils import append_dims
 
 
-class BasePatchifier(ABC):
+class BasePatchifier(ConfigMixin, ABC):
     """
     Abstract base class for patchifier implementations.
     Handles conversion between regular tensors and patched representations.
