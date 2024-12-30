@@ -892,6 +892,9 @@ class AttnProcessor2_0:
 
         value = attn.to_v(encoder_hidden_states)
 
+        if attn.upcast_attention:
+            value = value.float()
+
         inner_dim = key.shape[-1]
         head_dim = inner_dim // attn.heads
 
