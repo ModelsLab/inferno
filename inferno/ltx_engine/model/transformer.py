@@ -89,6 +89,9 @@ class GELU(nn.Module):
         self.approximate = approximate
 
     def gelu(self, gate: torch.Tensor) -> torch.Tensor:
+        if gate.device.type == "mps" and is_torch_version("<", "2.0.0"):
+            # fp16 gelu not supported on mps before torch 2.0
+            return F.gelu(gate.to(dtype=torch.float32), approximate=self.approximate).to(dtype=gate.dtype)
         return F.gelu(gate, approximate=self.approximate)
 
     def forward(self, hidden_states):
@@ -276,10 +279,7 @@ class FeedForward(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
         for i, module in enumerate(self.net):
-            if isinstance(module, (GEGLU, GELU)):
-                hidden_states = module(hidden_states, scale)
-            else:
-                hidden_states = module(hidden_states)
+            hidden_states = module(hidden_states)
         return hidden_states
 
 class SpatialNorm(nn.Module):
@@ -893,7 +893,7 @@ class AttnProcessor2_0:
         value = attn.to_v(encoder_hidden_states)
 
         if attn.upcast_attention:
-            value = value.float()
+            value = value.to(query.dtype)
 
         inner_dim = key.shape[-1]
         head_dim = inner_dim // attn.heads
@@ -938,7 +938,7 @@ class AttnProcessor2_0:
             hidden_states_a = F.scaled_dot_product_attention(
                 query,
                 key,
-                value,
+                value.to(query.dtype),
                 attn_mask=attention_mask,
                 dropout_p=0.0,
                 is_causal=False,
@@ -958,6 +958,8 @@ class AttnProcessor2_0:
             )
         else:
             hidden_states = hidden_states_a
+
+        hidden_states = hidden_states.to(attn.to_out[0].weight.dtype)
 
         # linear proj
         hidden_states = attn.to_out[0](hidden_states)
