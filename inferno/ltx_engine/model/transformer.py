@@ -17,7 +17,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from model.utils import TRANSFORMER_KEYS_RENAME_DICT, TimestepEmbedding, make_hashable_key, diffusers_and_inferno_config_mapping, SkipLayerStrategy
+from model.utils import TRANSFORMER_KEYS_RENAME_DICT, PixArtAlphaCombinedTimestepSizeEmbeddings, TimestepEmbedding, make_hashable_key, diffusers_and_inferno_config_mapping, SkipLayerStrategy
 
 try:
     from torch._dynamo import allow_in_graph as maybe_allow_in_graph
