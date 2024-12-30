@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import inspect
 import os
 import glob
 import json
@@ -495,111 +496,59 @@ class Attention(nn.Module):
         freqs_cis: Optional[Tuple[torch.FloatTensor, torch.FloatTensor]] = None,
         encoder_hidden_states: Optional[torch.FloatTensor] = None,
         attention_mask: Optional[torch.FloatTensor] = None,
-        temb: Optional[torch.FloatTensor] = None,
+        skip_layer_mask: Optional[torch.Tensor] = None,
+        skip_layer_strategy: Optional[SkipLayerStrategy] = None,
+        **cross_attention_kwargs,
     ) -> torch.Tensor:
+        r"""
+        The forward method of the `Attention` class.
+
+        Args:
+            hidden_states (`torch.Tensor`):
+                The hidden states of the query.
+            encoder_hidden_states (`torch.Tensor`, *optional*):
+                The hidden states of the encoder.
+            attention_mask (`torch.Tensor`, *optional*):
+                The attention mask to use. If `None`, no mask is applied.
+            skip_layer_mask (`torch.Tensor`, *optional*):
+                The skip layer mask to use. If `None`, no mask is applied.
+            skip_layer_strategy (`SkipLayerStrategy`, *optional*, defaults to `None`):
+                Controls which layers to skip for spatiotemporal guidance.
+            **cross_attention_kwargs:
+                Additional keyword arguments to pass along to the cross attention.
+
+        Returns:
+            `torch.Tensor`: The output of the attention layer.
         """
-        Forward pass of attention module.
-        """
-        batch_size, sequence_length, _ = (
-            hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
+        # The `Attention` class can call different attention processors / attention functions
+        # here we simply pass along all tensors to the selected processor class
+        # For standard processors that are defined here, `**cross_attention_kwargs` is empty
+
+        attn_parameters = set(
+            inspect.signature(self.processor.__call__).parameters.keys()
         )
-
-        residual = hidden_states if self.residual_connection else None
-
-        if self.spatial_norm is not None:
-            hidden_states = self.spatial_norm(hidden_states, temb)
-
-        # Project query, key, value
-        query = self.to_q(hidden_states)
-
-        if encoder_hidden_states is None:
-            encoder_hidden_states = hidden_states
-        elif self.norm_cross is not None:
-            if isinstance(self.norm_cross, nn.LayerNorm):
-                encoder_hidden_states = self.norm_cross(encoder_hidden_states)
-            else:
-                encoder_hidden_states = encoder_hidden_states.transpose(1, 2)
-                encoder_hidden_states = self.norm_cross(encoder_hidden_states)
-                encoder_hidden_states = encoder_hidden_states.transpose(1, 2)
-
-        key = self.to_k(encoder_hidden_states) if self.to_k is not None else None
-        value = self.to_v(encoder_hidden_states) if self.to_v is not None else None
-
-        if self.group_norm is not None:
-            hidden_states = hidden_states.transpose(1, 2)
-            hidden_states = self.group_norm(hidden_states)
-            hidden_states = hidden_states.transpose(1, 2)
-
-        # Apply rotary embeddings if used
-        if self.use_rope and freqs_cis is not None:
-            cos_sin = freqs_cis
-            query = self.apply_rotary_emb(query, cos_sin)
-            if key is not None:
-                key = self.apply_rotary_emb(key, cos_sin)
-
-        query = self.q_norm(query)
-        key = self.k_norm(key) if key is not None else None
-
-        # Handle dimensions
-        inner_dim = key.shape[-1] if key is not None else query.shape[-1]
-        head_dim = inner_dim // self.heads
-
-        # Shape for attention computation
-        query = query.view(batch_size, -1, self.heads, head_dim).transpose(1, 2)
-        if key is not None:
-            key = key.view(batch_size, -1, self.heads, head_dim).transpose(1, 2)
-        if value is not None:
-            value = value.view(batch_size, -1, self.heads, head_dim).transpose(1, 2)
-
-        # Prepare attention mask if needed
-        if attention_mask is not None and not self.use_tpu_flash_attention:
-            attention_mask = self.prepare_attention_mask(attention_mask, sequence_length, batch_size)
-
-        # Compute attention
-        if self.use_tpu_flash_attention and XLA_AVAILABLE:
-            # TPU Flash Attention path
-            q_segment_ids = None
-            if attention_mask is not None:
-                attention_mask = attention_mask.to(torch.float32)
-                q_segment_ids = torch.ones(batch_size, query.shape[2], device=query.device, dtype=torch.float32)
-                if key is not None:
-                    assert attention_mask.shape[1] == key.shape[2], f"Key shape mismatch: {key.shape[2]} vs {attention_mask.shape[1]}"
-
-            # TPU limitations checks
-            if query.shape[2] % 128 != 0 or (key is not None and key.shape[2] % 128 != 0):
-                raise ValueError("Query and key sequence lengths must be divisible by 128 for TPU")
-
-            hidden_states = flash_attention(
-                q=query,
-                k=key if key is not None else query,
-                v=value if value is not None else query,
-                q_segment_ids=q_segment_ids,
-                kv_segment_ids=attention_mask,
-                sm_scale=self.scale,
+        unused_kwargs = [
+            k for k, _ in cross_attention_kwargs.items() if k not in attn_parameters
+        ]
+        if len(unused_kwargs) > 0:
+            logger.warning(
+                f"cross_attention_kwargs {unused_kwargs} are not expected by"
+                f" {self.processor.__class__.__name__} and will be ignored."
             )
-        else:
-            # Standard attention path
-            attention_probs = self.get_attention_scores(
-                query,
-                key if key is not None else query,
-                attention_mask
-            )
-            hidden_states = torch.bmm(attention_probs, value if value is not None else query)
+        cross_attention_kwargs = {
+            k: w for k, w in cross_attention_kwargs.items() if k in attn_parameters
+        }
 
-        # Reshape and project output
-        hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, self.heads * head_dim)
-        hidden_states = self.to_out[0](hidden_states)
-        hidden_states = self.to_out[1](hidden_states)
-
-        # Apply residual connection if needed
-        if residual is not None:
-            hidden_states = hidden_states + residual
-
-        # Rescale output if needed
-        if self.rescale_output_factor != 1.0:
-            hidden_states = hidden_states / self.rescale_output_factor
-
-        return hidden_states
+        return self.processor(
+            self,
+            hidden_states,
+            freqs_cis=freqs_cis,
+            encoder_hidden_states=encoder_hidden_states,
+            attention_mask=attention_mask,
+            skip_layer_mask=skip_layer_mask,
+            skip_layer_strategy=skip_layer_strategy,
+            **cross_attention_kwargs,
+        )
 
     @staticmethod
     def apply_rotary_emb(
