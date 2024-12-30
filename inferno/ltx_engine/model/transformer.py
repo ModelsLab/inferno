@@ -1059,8 +1059,7 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
 
         return cos_freq.to(dtype), sin_freq.to(dtype)
 
-    def initialize(self, embedding_std: float, mode: Literal["xora", "legacy"]):
-        """Initialize model weights with specified standard deviation."""
+    def initialize(self, embedding_std: float, mode: Literal["ltx_video", "legacy"]):
         def _basic_init(module):
             if isinstance(module, nn.Linear):
                 torch.nn.init.xavier_uniform_(module.weight)
@@ -1069,40 +1068,51 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
 
         self.apply(_basic_init)
 
-        # Initialize timestep embedding MLP
+        # Initialize timestep embedding MLP:
         nn.init.normal_(
-            self.adaln_single.emb.linear_1.weight,
-            std=embedding_std
+            self.adaln_single.emb.timestep_embedder.linear_1.weight, std=embedding_std
         )
         nn.init.normal_(
-            self.adaln_single.emb.linear_2.weight,
-            std=embedding_std
+            self.adaln_single.emb.timestep_embedder.linear_2.weight, std=embedding_std
         )
-        nn.init.normal_(
-            self.adaln_single.linear.weight,
-            std=embedding_std
-        )
+        nn.init.normal_(self.adaln_single.linear.weight, std=embedding_std)
 
-        # Initialize caption embedding MLP if present
-        if self.caption_projection is not None:
-            for layer in self.caption_projection.linear_layers:
-                if isinstance(layer, nn.Linear):
-                    nn.init.normal_(layer.weight, std=embedding_std)
+        if hasattr(self.adaln_single.emb, "resolution_embedder"):
+            nn.init.normal_(
+                self.adaln_single.emb.resolution_embedder.linear_1.weight,
+                std=embedding_std,
+            )
+            nn.init.normal_(
+                self.adaln_single.emb.resolution_embedder.linear_2.weight,
+                std=embedding_std,
+            )
+        if hasattr(self.adaln_single.emb, "aspect_ratio_embedder"):
+            nn.init.normal_(
+                self.adaln_single.emb.aspect_ratio_embedder.linear_1.weight,
+                std=embedding_std,
+            )
+            nn.init.normal_(
+                self.adaln_single.emb.aspect_ratio_embedder.linear_2.weight,
+                std=embedding_std,
+            )
 
-        # Initialize transformer blocks
+        # Initialize caption embedding MLP:
+        nn.init.normal_(self.caption_projection.linear_1.weight, std=embedding_std)
+        nn.init.normal_(self.caption_projection.linear_1.weight, std=embedding_std)
+
         for block in self.transformer_blocks:
-            if mode.lower() == "xora":
+            if mode.lower() == "ltx_video":
                 nn.init.constant_(block.attn1.to_out[0].weight, 0)
                 nn.init.constant_(block.attn1.to_out[0].bias, 0)
 
             nn.init.constant_(block.attn2.to_out[0].weight, 0)
             nn.init.constant_(block.attn2.to_out[0].bias, 0)
 
-            if mode.lower() == "xora":
+            if mode.lower() == "ltx_video":
                 nn.init.constant_(block.ff.net[2].weight, 0)
                 nn.init.constant_(block.ff.net[2].bias, 0)
 
-        # Zero-out output layers
+        # Zero-out output layers:
         nn.init.constant_(self.proj_out.weight, 0)
         nn.init.constant_(self.proj_out.bias, 0)
 
