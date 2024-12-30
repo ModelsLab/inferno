@@ -1071,11 +1071,11 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
 
         # Initialize timestep embedding MLP
         nn.init.normal_(
-            self.adaln_single.emb.timestep_embedder.linear_1.weight,
+            self.adaln_single.emb.linear_1.weight,
             std=embedding_std
         )
         nn.init.normal_(
-            self.adaln_single.emb.timestep_embedder.linear_2.weight,
+            self.adaln_single.emb.linear_2.weight,
             std=embedding_std
         )
         nn.init.normal_(
