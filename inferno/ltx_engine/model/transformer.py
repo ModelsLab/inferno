@@ -955,7 +955,6 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                 standardization_norm=standardization_norm,
                 norm_elementwise_affine=norm_elementwise_affine,
                 norm_eps=norm_eps,
-                attention_type=attention_type,
                 use_tpu_flash_attention=use_tpu_flash_attention,
                 qk_norm=qk_norm,
                 use_rope=self.use_rope,
