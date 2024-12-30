@@ -307,10 +307,8 @@ def make_conv_nd(
                 out_channels=out_channels,
                 kernel_size=kernel_size,
                 stride=stride,
-                padding=padding,
                 dilation=dilation,
-                groups=groups,
-                bias=bias,
+                groups=groups
             )
         return torch.nn.Conv3d(
             in_channels=in_channels,

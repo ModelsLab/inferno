@@ -243,7 +243,7 @@ OURS_VAE_CONFIG = {
 }
 
 
-diffusers_and_ours_config_mapping = {
+diffusers_and_inferno_config_mapping = {
     make_hashable_key(DIFFUSERS_SCHEDULER_CONFIG): OURS_SCHEDULER_CONFIG,
     make_hashable_key(DIFFUSERS_TRANSFORMER_CONFIG): OURS_TRANSFORMER_CONFIG,
     make_hashable_key(DIFFUSERS_VAE_CONFIG): OURS_VAE_CONFIG,

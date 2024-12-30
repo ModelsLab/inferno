@@ -1,17 +1,22 @@
 from dataclasses import dataclass
+import os
+import glob
+import json
 import math
 import logging
 import numbers
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
 import numpy as np
+from safetensors import safe_open
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from inferno.ltx_engine.model.utils import TimestepEmbedding
+from model.utils import TRANSFORMER_KEYS_RENAME_DICT, TimestepEmbedding, make_hashable_key, diffusers_and_inferno_config_mapping
 
 try:
     from torch._dynamo import allow_in_graph as maybe_allow_in_graph
@@ -874,6 +879,7 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
     """
     Transformer model for 3D data with support for attention and cross-attention.
     """
+    @register_to_config
     def __init__(
         self,
         num_attention_heads: int = 16,
@@ -1101,6 +1107,75 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         # Zero-out output layers
         nn.init.constant_(self.proj_out.weight, 0)
         nn.init.constant_(self.proj_out.bias, 0)
+
+    def load_state_dict(
+        self,
+        state_dict: Dict,
+        *args,
+        **kwargs,
+    ):
+        if any([key.startswith("model.diffusion_model.") for key in state_dict.keys()]):
+            state_dict = {
+                key.replace("model.diffusion_model.", ""): value
+                for key, value in state_dict.items()
+                if key.startswith("model.diffusion_model.")
+            }
+        super().load_state_dict(state_dict, **kwargs)
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        pretrained_model_path: Optional[Union[str, os.PathLike]],
+        *args,
+        **kwargs,
+    ):
+        pretrained_model_path = Path(pretrained_model_path)
+        if pretrained_model_path.is_dir():
+            config_path = pretrained_model_path / "transformer" / "config.json"
+            with open(config_path, "r") as f:
+                config = make_hashable_key(json.load(f))
+
+            assert config in diffusers_and_inferno_config_mapping, (
+                "Provided diffusers checkpoint config for transformer is not suppported. "
+                "We only support diffusers configs found in Lightricks/LTX-Video."
+            )
+
+            config = diffusers_and_inferno_config_mapping[config]
+            state_dict = {}
+            ckpt_paths = (
+                pretrained_model_path
+                / "transformer"
+                / "diffusion_pytorch_model*.safetensors"
+            )
+            dict_list = glob.glob(str(ckpt_paths))
+            for dict_path in dict_list:
+                part_dict = {}
+                with safe_open(dict_path, framework="pt", device="cpu") as f:
+                    for k in f.keys():
+                        part_dict[k] = f.get_tensor(k)
+                state_dict.update(part_dict)
+
+            for key in list(state_dict.keys()):
+                new_key = key
+                for replace_key, rename_key in TRANSFORMER_KEYS_RENAME_DICT.items():
+                    new_key = new_key.replace(replace_key, rename_key)
+                state_dict[new_key] = state_dict.pop(key)
+
+            transformer = cls.from_config(config)
+            transformer.load_state_dict(state_dict, strict=True)
+        elif pretrained_model_path.is_file() and str(pretrained_model_path).endswith(
+            ".safetensors"
+        ):
+            comfy_single_file_state_dict = {}
+            with safe_open(pretrained_model_path, framework="pt", device="cpu") as f:
+                metadata = f.metadata()
+                for k in f.keys():
+                    comfy_single_file_state_dict[k] = f.get_tensor(k)
+            configs = json.loads(metadata["config"])
+            transformer_config = configs["transformer"]
+            transformer = Transformer3DModel.from_config(transformer_config)
+            transformer.load_state_dict(comfy_single_file_state_dict)
+        return transformer
 
     def forward(
         self,
