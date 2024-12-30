@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
+from diffusers.utils import BaseOutput, is_torch_version
 import numpy as np
 from safetensors import safe_open
 import torch
@@ -16,7 +17,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from model.utils import TRANSFORMER_KEYS_RENAME_DICT, TimestepEmbedding, make_hashable_key, diffusers_and_inferno_config_mapping
+from model.utils import TRANSFORMER_KEYS_RENAME_DICT, TimestepEmbedding, make_hashable_key, diffusers_and_inferno_config_mapping, SkipLayerStrategy
 
 try:
     from torch._dynamo import allow_in_graph as maybe_allow_in_graph
@@ -829,7 +830,7 @@ class BasicTransformerBlock(nn.Module):
 
 
 @dataclass
-class Transformer3DModelOutput:
+class Transformer3DModelOutput(BaseOutput):
     """Output of Transformer3DModel."""
     sample: torch.FloatTensor
 
@@ -1195,6 +1196,8 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
         attention_mask: Optional[torch.Tensor] = None,
         encoder_attention_mask: Optional[torch.Tensor] = None,
+        skip_layer_mask: Optional[torch.Tensor] = None,
+        skip_layer_strategy: Optional[SkipLayerStrategy] = None,
         return_dict: bool = True,
     ) -> Union[Transformer3DModelOutput, Tuple]:
         """
@@ -1212,27 +1215,43 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
             return_dict: Whether to return output as a dataclass
         """
         # Handle attention masks for TPU
+        # for tpu attention offload 2d token masks are used. No need to transform.
         if not self.use_tpu_flash_attention:
+            # ensure attention_mask is a bias, and give it a singleton query_tokens dimension.
+            #   we may have done this conversion already, e.g. if we came here via UNet2DConditionModel#forward.
+            #   we can tell by counting dims; if ndim == 2: it's a mask rather than a bias.
+            # expects mask of shape:
+            #   [batch, key_tokens]
+            # adds singleton query_tokens dimension:
+            #   [batch,                    1, key_tokens]
+            # this helps to broadcast it as a bias over attention scores, which will be in one of the following shapes:
+            #   [batch,  heads, query_tokens, key_tokens] (e.g. torch sdp attn)
+            #   [batch * heads, query_tokens, key_tokens] (e.g. xformers or classic attn)
             if attention_mask is not None and attention_mask.ndim == 2:
+                # assume that mask is expressed as:
+                #   (1 = keep,      0 = discard)
+                # convert mask into a bias that can be added to attention scores:
+                #       (keep = +0,     discard = -10000.0)
                 attention_mask = (1 - attention_mask.to(hidden_states.dtype)) * -10000.0
                 attention_mask = attention_mask.unsqueeze(1)
 
+            # convert encoder_attention_mask to a bias the same way we do for attention_mask
             if encoder_attention_mask is not None and encoder_attention_mask.ndim == 2:
                 encoder_attention_mask = (
                     1 - encoder_attention_mask.to(hidden_states.dtype)
                 ) * -10000.0
                 encoder_attention_mask = encoder_attention_mask.unsqueeze(1)
 
-        # Project input
+        # 1. Input
         hidden_states = self.patchify_proj(hidden_states)
 
-        # Scale timestep if needed
-        if self.timestep_scale_multiplier and timestep is not None:
+        if self.timestep_scale_multiplier:
             timestep = self.timestep_scale_multiplier * timestep
 
-        # Handle positional embeddings
         if self.positional_embedding_type == "absolute":
-            pos_embed_3d = self.get_absolute_pos_embed(indices_grid).to(hidden_states.device)
+            pos_embed_3d = self.get_absolute_pos_embed(indices_grid).to(
+                hidden_states.device
+            )
             if self.project_to_2d_pos:
                 pos_embed = self.to_2d_proj(pos_embed_3d)
             hidden_states = (hidden_states + pos_embed).to(hidden_states.dtype)
@@ -1240,7 +1259,6 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         elif self.positional_embedding_type == "rope":
             freqs_cis = self.precompute_freqs_cis(indices_grid)
 
-        # Process timestep embedding
         batch_size = hidden_states.shape[0]
         timestep, embedded_timestep = self.adaln_single(
             timestep.flatten(),
@@ -1248,24 +1266,42 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
             batch_size=batch_size,
             hidden_dtype=hidden_states.dtype,
         )
-        
-        # Reshape timestep tensors
+        # Second dimension is 1 or number of tokens (if timestep_per_token)
         timestep = timestep.view(batch_size, -1, timestep.shape[-1])
-        embedded_timestep = embedded_timestep.view(batch_size, -1, embedded_timestep.shape[-1])
+        embedded_timestep = embedded_timestep.view(
+            batch_size, -1, embedded_timestep.shape[-1]
+        )
 
-        # Project caption/context if needed
-        if self.caption_projection is not None and encoder_hidden_states is not None:
+        if skip_layer_mask is None:
+            skip_layer_mask = torch.ones(
+                len(self.transformer_blocks), batch_size, device=hidden_states.device
+            )
+
+        # 2. Blocks
+        if self.caption_projection is not None:
+            batch_size = hidden_states.shape[0]
             encoder_hidden_states = self.caption_projection(encoder_hidden_states)
             encoder_hidden_states = encoder_hidden_states.view(
                 batch_size, -1, hidden_states.shape[-1]
             )
 
-        # Process transformer blocks
-        cross_attention_kwargs = cross_attention_kwargs or {}
-        for block in self.transformer_blocks:
-            if self.gradient_checkpointing and self.training:
+        for block_idx, block in enumerate(self.transformer_blocks):
+            if self.training and self.gradient_checkpointing:
+
+                def create_custom_forward(module, return_dict=None):
+                    def custom_forward(*inputs):
+                        if return_dict is not None:
+                            return module(*inputs, return_dict=return_dict)
+                        else:
+                            return module(*inputs)
+
+                    return custom_forward
+
+                ckpt_kwargs: Dict[str, Any] = (
+                    {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                )
                 hidden_states = torch.utils.checkpoint.checkpoint(
-                    block,
+                    create_custom_forward(block),
                     hidden_states,
                     freqs_cis,
                     attention_mask,
@@ -1274,7 +1310,9 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                     timestep,
                     cross_attention_kwargs,
                     class_labels,
-                    use_reentrant=False
+                    skip_layer_mask[block_idx],
+                    skip_layer_strategy,
+                    **ckpt_kwargs,
                 )
             else:
                 hidden_states = block(
@@ -1286,30 +1324,32 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                     timestep=timestep,
                     cross_attention_kwargs=cross_attention_kwargs,
                     class_labels=class_labels,
+                    skip_layer_mask=skip_layer_mask[block_idx],
+                    skip_layer_strategy=skip_layer_strategy,
                 )
 
-        # Output processing
-        scale_shift_values = self.scale_shift_table[None, None] + embedded_timestep[:, :, None]
+        # 3. Output
+        scale_shift_values = (
+            self.scale_shift_table[None, None] + embedded_timestep[:, :, None]
+        )
         shift, scale = scale_shift_values[:, :, 0], scale_shift_values[:, :, 1]
-        
         hidden_states = self.norm_out(hidden_states)
+        # Modulation
         hidden_states = hidden_states * (1 + scale) + shift
         hidden_states = self.proj_out(hidden_states)
-
         if not return_dict:
             return (hidden_states,)
 
         return Transformer3DModelOutput(sample=hidden_states)
 
-    def get_absolute_pos_embed(self, grid: torch.Tensor) -> torch.Tensor:
-        """Get absolute positional embeddings from grid."""
+    def get_absolute_pos_embed(self, grid):
         grid_np = grid[0].cpu().numpy()
         embed_dim_3d = (
             math.ceil((self.inner_dim / 2) * 3)
             if self.project_to_2d_pos
             else self.inner_dim
         )
-        pos_embed = get_3d_sincos_pos_embed(
+        pos_embed = get_3d_sincos_pos_embed(  # (f h w)
             embed_dim_3d,
             grid_np,
             h=int(max(grid_np[1]) + 1),

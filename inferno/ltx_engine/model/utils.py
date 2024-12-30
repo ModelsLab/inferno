@@ -3,6 +3,13 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from enum import Enum, auto
+
+
+class SkipLayerStrategy(Enum):
+    Attention = auto()
+    Residual = auto()
+
 
 def append_dims(x: torch.Tensor, target_dims: int):
     """Appends dimensions to the end of a tensor until it has target_dims dimensions."""
