@@ -836,24 +836,37 @@ class Transformer3DModelOutput(BaseOutput):
 
 
 class AdaLayerNormSingle(nn.Module):
+    r"""
+    Norm layer adaptive layer norm single (adaLN-single).
+
+    As proposed in PixArt-Alpha (see: https://arxiv.org/abs/2310.00426; Section 2.3).
+
+    Parameters:
+        embedding_dim (`int`): The size of each embedding vector.
+        use_additional_conditions (`bool`): To use additional conditions for normalization or not.
     """
-    Adaptive Layer Norm that supports single conditioning.
-    """
+
     def __init__(self, embedding_dim: int, use_additional_conditions: bool = False):
         super().__init__()
-        self.emb = TimestepEmbedding(embedding_dim)
+
+        self.emb = PixArtAlphaCombinedTimestepSizeEmbeddings(
+            embedding_dim, size_emb_dim=embedding_dim // 3, use_additional_conditions=use_additional_conditions
+        )
+
+        self.silu = nn.SiLU()
         self.linear = nn.Linear(embedding_dim, 6 * embedding_dim, bias=True)
-        self.use_additional_conditions = use_additional_conditions
 
     def forward(
         self,
         timestep: torch.Tensor,
-        conditioning_embedding: Dict[str, torch.Tensor],
-        batch_size: int,
-        hidden_dtype: Optional[torch.dtype] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        embedded_timestep = self.emb(timestep, batch_size, hidden_dtype)
-        return timestep, embedded_timestep
+        added_cond_kwargs: Optional[Dict[str, torch.Tensor]] = None,
+        batch_size: Optional[int] = None,
+        hidden_dtype: Optional[torch.dtype] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        # No modulation happening here.
+        added_cond_kwargs = added_cond_kwargs or {"resolution": None, "aspect_ratio": None}
+        embedded_timestep = self.emb(timestep, **added_cond_kwargs, batch_size=batch_size, hidden_dtype=hidden_dtype)
+        return self.linear(self.silu(embedded_timestep)), embedded_timestep
 
 
 class PixArtAlphaTextProjection(nn.Module):
