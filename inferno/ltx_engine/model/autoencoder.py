@@ -20,6 +20,7 @@ from safetensors import safe_open
 from diffusers.models.autoencoders.vae import DecoderOutput
 from diffusers.models.modeling_outputs import AutoencoderKLOutput
 from diffusers import ConfigMixin, ModelMixin
+from diffusers.utils import logging
 from model.utils import (
     diffusers_and_inferno_config_mapping,
     make_hashable_key,
@@ -27,6 +28,7 @@ from model.utils import (
 )
 
 PER_CHANNEL_STATISTICS_PREFIX = "per_channel_statistics."
+
 logger = logging.get_logger(__name__)
 
 class PixArtAlphaCombinedTimestepSizeEmbeddings(nn.Module):
