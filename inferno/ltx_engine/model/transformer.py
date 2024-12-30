@@ -947,7 +947,6 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                 dropout=dropout,
                 cross_attention_dim=cross_attention_dim,
                 activation_fn=activation_fn,
-                num_embeds_ada_norm=num_embeds_ada_norm,
                 attention_bias=attention_bias,
                 only_cross_attention=only_cross_attention,
                 double_self_attention=double_self_attention,
