@@ -735,57 +735,77 @@ class BasicTransformerBlock(nn.Module):
         encoder_hidden_states: Optional[torch.FloatTensor] = None,
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
         timestep: Optional[torch.LongTensor] = None,
-        cross_attention_kwargs: Dict[str, Any] = None
+        cross_attention_kwargs: Dict[str, Any] = None,
+        class_labels: Optional[torch.LongTensor] = None,
+        added_cond_kwargs: Optional[Dict[str, torch.Tensor]] = None,
+        skip_layer_mask: Optional[torch.Tensor] = None,
+        skip_layer_strategy: Optional[SkipLayerStrategy] = None,
     ) -> torch.FloatTensor:
-        """
-        Forward pass of transformer block.
-        """
-        # Process input through self-attention
+        if cross_attention_kwargs is not None:
+            if cross_attention_kwargs.get("scale", None) is not None:
+                logger.warning(
+                    "Passing `scale` to `cross_attention_kwargs` is depcrecated. `scale` will be ignored."
+                )
+
+        # Notice that normalization is always applied before the real computation in the following blocks.
+        # 0. Self-Attention
         batch_size = hidden_states.shape[0]
+
         norm_hidden_states = self.norm1(hidden_states)
 
-        # Handle adaptive normalization
+        # Apply ada_norm_single
         if self.adaptive_norm in ["single_scale_shift", "single_scale"]:
-            if timestep is None or timestep.ndim != 3:
-                raise ValueError("Timestep must be provided for adaptive norm")
-
+            assert timestep.ndim == 3  # [batch, 1 or num_tokens, embedding_dim]
             num_ada_params = self.scale_shift_table.shape[0]
-            ada_params = self.scale_shift_table[None, None] + timestep.reshape(
+            ada_values = self.scale_shift_table[None, None] + timestep.reshape(
                 batch_size, timestep.shape[1], num_ada_params, -1
             )
-
             if self.adaptive_norm == "single_scale_shift":
-                shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = ada_params.unbind(dim=2)
+                shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
+                    ada_values.unbind(dim=2)
+                )
                 norm_hidden_states = norm_hidden_states * (1 + scale_msa) + shift_msa
             else:
-                scale_msa, gate_msa, scale_mlp, gate_mlp = ada_params.unbind(dim=2)
+                scale_msa, gate_msa, scale_mlp, gate_mlp = ada_values.unbind(dim=2)
                 norm_hidden_states = norm_hidden_states * (1 + scale_msa)
+        elif self.adaptive_norm == "none":
+            scale_msa, gate_msa, scale_mlp, gate_mlp = None, None, None, None
         else:
-            scale_msa = gate_msa = scale_mlp = gate_mlp = None
-            shift_msa = shift_mlp = None
+            raise ValueError(f"Unknown adaptive norm type: {self.adaptive_norm}")
 
-        # Remove extra dimension if present
-        norm_hidden_states = norm_hidden_states.squeeze(1)
+        norm_hidden_states = norm_hidden_states.squeeze(
+            1
+        )  # TODO: Check if this is needed
 
-        # Self-attention
-        cross_attention_kwargs = cross_attention_kwargs or {}
+        # 1. Prepare GLIGEN inputs
+        cross_attention_kwargs = (
+            cross_attention_kwargs.copy() if cross_attention_kwargs is not None else {}
+        )
+
         attn_output = self.attn1(
             norm_hidden_states,
             freqs_cis=freqs_cis,
-            encoder_hidden_states=encoder_hidden_states if self.only_cross_attention else None,
+            encoder_hidden_states=(
+                encoder_hidden_states if self.only_cross_attention else None
+            ),
             attention_mask=attention_mask,
-            **cross_attention_kwargs
+            skip_layer_mask=skip_layer_mask,
+            skip_layer_strategy=skip_layer_strategy,
+            **cross_attention_kwargs,
         )
-
         if gate_msa is not None:
             attn_output = gate_msa * attn_output
 
         hidden_states = attn_output + hidden_states
-        hidden_states = hidden_states.squeeze(1)
+        if hidden_states.ndim == 4:
+            hidden_states = hidden_states.squeeze(1)
 
-        # Cross-attention block
+        # 3. Cross-Attention
         if self.attn2 is not None:
-            attn_input = self.attn2_norm(hidden_states) if self.adaptive_norm == "none" else hidden_states
+            if self.adaptive_norm == "none":
+                attn_input = self.attn2_norm(hidden_states)
+            else:
+                attn_input = hidden_states
             attn_output = self.attn2(
                 attn_input,
                 freqs_cis=freqs_cis,
@@ -795,34 +815,28 @@ class BasicTransformerBlock(nn.Module):
             )
             hidden_states = attn_output + hidden_states
 
-        # Feed-forward block
+        # 4. Feed-forward
         norm_hidden_states = self.norm2(hidden_states)
-
-        # Apply adaptive normalization to feed-forward input if needed
         if self.adaptive_norm == "single_scale_shift":
             norm_hidden_states = norm_hidden_states * (1 + scale_mlp) + shift_mlp
         elif self.adaptive_norm == "single_scale":
             norm_hidden_states = norm_hidden_states * (1 + scale_mlp)
+        elif self.adaptive_norm == "none":
+            pass
+        else:
+            raise ValueError(f"Unknown adaptive norm type: {self.adaptive_norm}")
 
-        # Handle chunked feed-forward if configured
         if self._chunk_size is not None:
+            # "feed_forward_chunk_size" can be used to save memory
             ff_output = _chunked_feed_forward(
-                self.ff, 
-                norm_hidden_states, 
-                self._chunk_dim, 
-                self._chunk_size
+                self.ff, norm_hidden_states, self._chunk_dim, self._chunk_size
             )
         else:
             ff_output = self.ff(norm_hidden_states)
-
-        # Apply gating to feed-forward output if used
         if gate_mlp is not None:
             ff_output = gate_mlp * ff_output
 
-        # Residual connection with feed-forward output
         hidden_states = ff_output + hidden_states
-
-        # Remove extra dimension if present
         if hidden_states.ndim == 4:
             hidden_states = hidden_states.squeeze(1)
 
