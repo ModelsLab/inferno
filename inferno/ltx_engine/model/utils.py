@@ -5,6 +5,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 from enum import Enum, auto
 
+ACTIVATION_FUNCTIONS = {
+    "swish": nn.SiLU(),
+    "silu": nn.SiLU(),
+    "mish": nn.Mish(),
+    "gelu": nn.GELU(),
+    "relu": nn.ReLU(),
+}
 
 class SkipLayerStrategy(Enum):
     Attention = auto()
@@ -80,43 +87,51 @@ class Timesteps(nn.Module):
         return t_emb
     
 class TimestepEmbedding(nn.Module):
-    """
-    Embeds scalar timesteps into vector representations.
-    """
-    def __init__(self, embedding_dim: int, max_period: int = 10000):
-        super().__init__()
-        self.embedding_dim = embedding_dim
-        self.max_period = max_period
-        self.linear_1 = nn.Linear(embedding_dim, embedding_dim, bias=True)
-        self.linear_2 = nn.Linear(embedding_dim, embedding_dim, bias=True)
-
-    def forward(
+    def __init__(
         self,
-        timesteps: torch.Tensor,
-        batch_size: Optional[int] = None,
-        dtype: Optional[torch.dtype] = None
-    ) -> torch.Tensor:
-        if timesteps.ndim == 0:
-            timesteps = timesteps[None]
+        in_channels: int,
+        time_embed_dim: int,
+        act_fn: str = "silu",
+        out_dim: int = None,
+        post_act_fn: Optional[str] = None,
+        cond_proj_dim=None,
+        sample_proj_bias=True,
+    ):
+        super().__init__()
 
-        half_dim = self.embedding_dim // 2
-        freqs = torch.exp(
-            -math.log(self.max_period) * torch.arange(start=0, end=half_dim, dtype=torch.float32) / half_dim
-        ).to(device=timesteps.device)
-        args = timesteps[:, None].float() * freqs[None]
-        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+        self.linear_1 = nn.Linear(in_channels, time_embed_dim, sample_proj_bias)
 
-        if self.embedding_dim % 2:
-            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+        if cond_proj_dim is not None:
+            self.cond_proj = nn.Linear(cond_proj_dim, in_channels, bias=False)
+        else:
+            self.cond_proj = None
 
-        embedding = self.linear_1(embedding)
-        embedding = F.silu(embedding)
-        embedding = self.linear_2(embedding)
+        self.act = ACTIVATION_FUNCTIONS[act_fn]
 
-        if batch_size is not None:
-            embedding = embedding.repeat(batch_size, 1, 1)
+        if out_dim is not None:
+            time_embed_dim_out = out_dim
+        else:
+            time_embed_dim_out = time_embed_dim
+        self.linear_2 = nn.Linear(time_embed_dim, time_embed_dim_out, sample_proj_bias)
 
-        return embedding.to(dtype=dtype) if dtype is not None else embedding
+        if post_act_fn is None:
+            self.post_act = None
+        else:
+            self.post_act = ACTIVATION_FUNCTIONS[post_act_fn]
+
+    def forward(self, sample, condition=None):
+        if condition is not None:
+            sample = sample + self.cond_proj(condition)
+        sample = self.linear_1(sample)
+
+        if self.act is not None:
+            sample = self.act(sample)
+
+        sample = self.linear_2(sample)
+
+        if self.post_act is not None:
+            sample = self.post_act(sample)
+        return sample
     
 def make_hashable_key(dict_key):
     def convert_value(value):

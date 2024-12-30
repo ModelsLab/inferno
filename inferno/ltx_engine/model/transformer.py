@@ -858,21 +858,28 @@ class AdaLayerNormSingle(nn.Module):
 
 class PixArtAlphaTextProjection(nn.Module):
     """
-    Transforms text embeddings for conditioning.
-    """
-    def __init__(self, in_features: int, hidden_size: int, num_hidden_layers: int = 2):
-        super().__init__()
-        self.linear_layers = nn.ModuleList([])
-        
-        for i in range(num_hidden_layers):
-            in_dim = in_features if i == 0 else hidden_size
-            self.linear_layers.append(nn.Linear(in_dim, hidden_size))
-            if i != num_hidden_layers - 1:
-                self.linear_layers.append(nn.SiLU())
+    Projects caption embeddings. Also handles dropout for classifier-free guidance.
 
-    def forward(self, hidden_states: torch.FloatTensor) -> torch.FloatTensor:
-        for layer in self.linear_layers:
-            hidden_states = layer(hidden_states)
+    Adapted from https://github.com/PixArt-alpha/PixArt-alpha/blob/master/diffusion/model/nets/PixArt_blocks.py
+    """
+
+    def __init__(self, in_features, hidden_size, out_features=None, act_fn="gelu_tanh"):
+        super().__init__()
+        if out_features is None:
+            out_features = hidden_size
+        self.linear_1 = nn.Linear(in_features=in_features, out_features=hidden_size, bias=True)
+        if act_fn == "gelu_tanh":
+            self.act_1 = nn.GELU(approximate="tanh")
+        elif act_fn == "silu":
+            self.act_1 = nn.SiLU()
+        else:
+            raise ValueError(f"Unknown activation function: {act_fn}")
+        self.linear_2 = nn.Linear(in_features=hidden_size, out_features=out_features, bias=True)
+
+    def forward(self, caption):
+        hidden_states = self.linear_1(caption)
+        hidden_states = self.act_1(hidden_states)
+        hidden_states = self.linear_2(hidden_states)
         return hidden_states
 
 
