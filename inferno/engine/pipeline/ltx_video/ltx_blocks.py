@@ -1,10 +1,10 @@
 import torch
-from model.autoencoder import AutoencoderKL
+from model.autoencoders.autoencoder_kl_ltx import AutoencoderKL
 from einops import rearrange
 from torch import Tensor
 
 
-from model.autoencoder import CausalVideoAutoencoder
+from model.autoencoders.autoencoder_kl_ltx import CausalVideoAutoencoder
 
 import json
 import os
@@ -19,9 +19,9 @@ from torch.nn import functional
 
 from diffusers.utils import logging
 
-from model.autoencoder import make_conv_nd, make_linear_nd
-from model.autoencoder import PixelNorm
-from model.autoencoder import AutoencoderKL as AutoencoderKLWrapper
+from model.autoencoders.autoencoder_kl_ltx import make_conv_nd, make_linear_nd
+from model.blocks.normalization import PixelNorm
+from model.autoencoders.autoencoder_kl_ltx import AutoencoderKL as AutoencoderKLWrapper
 
 try:
     import torch_xla.core.xla_model as xm

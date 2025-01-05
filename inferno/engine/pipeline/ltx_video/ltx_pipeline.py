@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 from contextlib import nullcontext
 from diffusers.image_processor import VaeImageProcessor
-from model.autoencoder import AutoencoderKL
+from model.autoencoders.autoencoder_kl_ltx import AutoencoderKL
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline, ImagePipelineOutput
 from diffusers.schedulers import DPMSolverMultistepScheduler
 from diffusers.utils import (
@@ -24,16 +24,16 @@ from diffusers.utils.torch_utils import randn_tensor
 from einops import rearrange
 from transformers import T5EncoderModel, T5Tokenizer
 
-from model.transformer import Transformer3DModel
-from model.patchifier import BasePatchifier
-from pipeline.utils import (
+from model.transformers.transformer_ltx import LTXTransformer3DModel
+from model.patchifiers.patchify_ltx import BasePatchifier
+from .ltx_blocks import (
     get_vae_size_scale_factor,
     vae_decode,
     vae_encode,
 )
-from model.autoencoder import CausalVideoAutoencoder
-from pipeline.models import ConditioningMethod
-from scheduler.scheduler import TimestepShifter
+from model.autoencoders.autoencoder_kl_ltx import CausalVideoAutoencoder
+from model.schedulers.rectified_flow_scheduler import TimestepShifter
+from enum import Enum
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -44,77 +44,11 @@ if is_bs4_available():
 if is_ftfy_available():
     import ftfy
 
-ASPECT_RATIO_1024_BIN = {
-    "0.25": [512.0, 2048.0],
-    "0.28": [512.0, 1856.0],
-    "0.32": [576.0, 1792.0],
-    "0.33": [576.0, 1728.0],
-    "0.35": [576.0, 1664.0],
-    "0.4": [640.0, 1600.0],
-    "0.42": [640.0, 1536.0],
-    "0.48": [704.0, 1472.0],
-    "0.5": [704.0, 1408.0],
-    "0.52": [704.0, 1344.0],
-    "0.57": [768.0, 1344.0],
-    "0.6": [768.0, 1280.0],
-    "0.68": [832.0, 1216.0],
-    "0.72": [832.0, 1152.0],
-    "0.78": [896.0, 1152.0],
-    "0.82": [896.0, 1088.0],
-    "0.88": [960.0, 1088.0],
-    "0.94": [960.0, 1024.0],
-    "1.0": [1024.0, 1024.0],
-    "1.07": [1024.0, 960.0],
-    "1.13": [1088.0, 960.0],
-    "1.21": [1088.0, 896.0],
-    "1.29": [1152.0, 896.0],
-    "1.38": [1152.0, 832.0],
-    "1.46": [1216.0, 832.0],
-    "1.67": [1280.0, 768.0],
-    "1.75": [1344.0, 768.0],
-    "2.0": [1408.0, 704.0],
-    "2.09": [1472.0, 704.0],
-    "2.4": [1536.0, 640.0],
-    "2.5": [1600.0, 640.0],
-    "3.0": [1728.0, 576.0],
-    "4.0": [2048.0, 512.0],
-}
-
-ASPECT_RATIO_512_BIN = {
-    "0.25": [256.0, 1024.0],
-    "0.28": [256.0, 928.0],
-    "0.32": [288.0, 896.0],
-    "0.33": [288.0, 864.0],
-    "0.35": [288.0, 832.0],
-    "0.4": [320.0, 800.0],
-    "0.42": [320.0, 768.0],
-    "0.48": [352.0, 736.0],
-    "0.5": [352.0, 704.0],
-    "0.52": [352.0, 672.0],
-    "0.57": [384.0, 672.0],
-    "0.6": [384.0, 640.0],
-    "0.68": [416.0, 608.0],
-    "0.72": [416.0, 576.0],
-    "0.78": [448.0, 576.0],
-    "0.82": [448.0, 544.0],
-    "0.88": [480.0, 544.0],
-    "0.94": [480.0, 512.0],
-    "1.0": [512.0, 512.0],
-    "1.07": [512.0, 480.0],
-    "1.13": [544.0, 480.0],
-    "1.21": [544.0, 448.0],
-    "1.29": [576.0, 448.0],
-    "1.38": [576.0, 416.0],
-    "1.46": [608.0, 416.0],
-    "1.67": [640.0, 384.0],
-    "1.75": [672.0, 384.0],
-    "2.0": [704.0, 352.0],
-    "2.09": [736.0, 352.0],
-    "2.4": [768.0, 320.0],
-    "2.5": [800.0, 320.0],
-    "3.0": [864.0, 288.0],
-    "4.0": [1024.0, 256.0],
-}
+class ConditioningMethod(Enum):
+    UNCONDITIONAL = "unconditional"
+    FIRST_FRAME = "first_frame"
+    LAST_FRAME = "last_frame"
+    FIRST_AND_LAST_FRAME = "first_and_last_frame"
 
 
 # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.retrieve_timesteps
@@ -211,7 +145,7 @@ class LTXVideoPipeline(DiffusionPipeline):
         tokenizer: T5Tokenizer,
         text_encoder: T5EncoderModel,
         vae: AutoencoderKL,
-        transformer: Transformer3DModel,
+        transformer: LTXTransformer3DModel,
         scheduler: DPMSolverMultistepScheduler,
         patchifier: BasePatchifier,
     ):

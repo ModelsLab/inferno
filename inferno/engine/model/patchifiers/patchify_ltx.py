@@ -5,7 +5,7 @@ from torch import Tensor
 from diffusers.configuration_utils import ConfigMixin
 from einops import rearrange
 
-from model.utils import append_dims
+from utils.ltx_utils import append_dims
 
 
 class BasePatchifier(ConfigMixin, ABC):

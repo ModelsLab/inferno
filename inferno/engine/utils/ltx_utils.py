@@ -1,17 +1,38 @@
+from enum import Enum, auto
 import torch
 import torch.nn as nn
-from q8_kernels.modules.rms_norm import RMSNorm as QRMSNorm
+from kernels.ltx_video.q8_kernels.modules.rms_norm import RMSNorm as QRMSNorm
 from diffusers.models.normalization import RMSNorm
-from q8_kernels.modules.activations import GELU as QGELU
+from kernels.ltx_video.q8_kernels.modules.activations import GELU as QGELU
 from diffusers.models.activations import GELU
-from q8_kernels.modules.linear import Q8Linear
+from kernels.ltx_video.q8_kernels.modules.linear import Q8Linear
 from model.attention.attention_ltx import LTXVideoQ8AttentionProcessor
 import argparse
 from diffusers import LTXVideoTransformer3DModel
-from q8_kernels.functional.quantizer import quantize
-from q8_kernels.functional.fast_hadamard import hadamard_transform
+from kernels.ltx_video.q8_kernels.functional.quantizer import quantize
+from kernels.ltx_video.q8_kernels.functional.fast_hadamard import hadamard_transform
 
 MODULES_TO_NOT_CONVERT = ["proj_in", "time_embed", "caption_projection", "proj_out"]
+
+try:
+    from torch._dynamo import allow_in_graph as maybe_allow_in_graph
+except (ImportError, ModuleNotFoundError):
+
+    def maybe_allow_in_graph(cls):
+        return cls
+    
+class SkipLayerStrategy(Enum):
+    Attention = auto()
+    Residual = auto()
+
+def append_dims(x: torch.Tensor, target_dims: int):
+    """Appends dimensions to the end of a tensor until it has target_dims dimensions."""
+    dims_to_append = target_dims - x.ndim
+    if dims_to_append < 0:
+        raise ValueError(f'input has {x.ndim} dims but target_dims is {target_dims}, which is less')
+    elif dims_to_append == 0:
+        return x
+    return x[(...,) + (None,) * dims_to_append]
 
 def replace_linear(model, current_key_name=None, replaced=False):
     for name, child in model.named_children():
@@ -198,6 +219,252 @@ def convert_state_dict(orig_state_dict):
 
     return new_state_dict
 
+def make_hashable_key(dict_key):
+    def convert_value(value):
+        if isinstance(value, list):
+            return tuple(value)
+        elif isinstance(value, dict):
+            return tuple(sorted((k, convert_value(v)) for k, v in value.items()))
+        else:
+            return value
+
+    return tuple(sorted((k, convert_value(v)) for k, v in dict_key.items()))
+
+
+DIFFUSERS_SCHEDULER_CONFIG = {
+    "_class_name": "FlowMatchEulerDiscreteScheduler",
+    "_diffusers_version": "0.32.0.dev0",
+    "base_image_seq_len": 1024,
+    "base_shift": 0.95,
+    "invert_sigmas": False,
+    "max_image_seq_len": 4096,
+    "max_shift": 2.05,
+    "num_train_timesteps": 1000,
+    "shift": 1.0,
+    "shift_terminal": 0.1,
+    "use_beta_sigmas": False,
+    "use_dynamic_shifting": True,
+    "use_exponential_sigmas": False,
+    "use_karras_sigmas": False,
+}
+DIFFUSERS_TRANSFORMER_CONFIG = {
+    "_class_name": "LTXVideoTransformer3DModel",
+    "_diffusers_version": "0.32.0.dev0",
+    "activation_fn": "gelu-approximate",
+    "attention_bias": True,
+    "attention_head_dim": 64,
+    "attention_out_bias": True,
+    "caption_channels": 4096,
+    "cross_attention_dim": 2048,
+    "in_channels": 128,
+    "norm_elementwise_affine": False,
+    "norm_eps": 1e-06,
+    "num_attention_heads": 32,
+    "num_layers": 28,
+    "out_channels": 128,
+    "patch_size": 1,
+    "patch_size_t": 1,
+    "qk_norm": "rms_norm_across_heads",
+}
+DIFFUSERS_VAE_CONFIG = {
+    "_class_name": "AutoencoderKLLTXVideo",
+    "_diffusers_version": "0.32.0.dev0",
+    "block_out_channels": [128, 256, 512, 512],
+    "decoder_causal": False,
+    "encoder_causal": True,
+    "in_channels": 3,
+    "latent_channels": 128,
+    "layers_per_block": [4, 3, 3, 3, 4],
+    "out_channels": 3,
+    "patch_size": 4,
+    "patch_size_t": 1,
+    "resnet_norm_eps": 1e-06,
+    "scaling_factor": 1.0,
+    "spatio_temporal_scaling": [True, True, True, False],
+}
+
+OURS_SCHEDULER_CONFIG = {
+    "_class_name": "RectifiedFlowScheduler",
+    "_diffusers_version": "0.25.1",
+    "num_train_timesteps": 1000,
+    "shifting": "SD3",
+    "base_resolution": None,
+    "target_shift_terminal": 0.1,
+}
+
+OURS_TRANSFORMER_CONFIG = {
+    "_class_name": "Transformer3DModel",
+    "_diffusers_version": "0.25.1",
+    "_name_or_path": "PixArt-alpha/PixArt-XL-2-256x256",
+    "activation_fn": "gelu-approximate",
+    "attention_bias": True,
+    "attention_head_dim": 64,
+    "attention_type": "default",
+    "caption_channels": 4096,
+    "cross_attention_dim": 2048,
+    "double_self_attention": False,
+    "dropout": 0.0,
+    "in_channels": 128,
+    "norm_elementwise_affine": False,
+    "norm_eps": 1e-06,
+    "norm_num_groups": 32,
+    "num_attention_heads": 32,
+    "num_embeds_ada_norm": 1000,
+    "num_layers": 28,
+    "num_vector_embeds": None,
+    "only_cross_attention": False,
+    "out_channels": 128,
+    "project_to_2d_pos": True,
+    "upcast_attention": False,
+    "use_linear_projection": False,
+    "qk_norm": "rms_norm",
+    "standardization_norm": "rms_norm",
+    "positional_embedding_type": "rope",
+    "positional_embedding_theta": 10000.0,
+    "positional_embedding_max_pos": [20, 2048, 2048],
+    "timestep_scale_multiplier": 1000,
+}
+OURS_VAE_CONFIG = {
+    "_class_name": "CausalVideoAutoencoder",
+    "dims": 3,
+    "in_channels": 3,
+    "out_channels": 3,
+    "latent_channels": 128,
+    "blocks": [
+        ["res_x", 4],
+        ["compress_all", 1],
+        ["res_x_y", 1],
+        ["res_x", 3],
+        ["compress_all", 1],
+        ["res_x_y", 1],
+        ["res_x", 3],
+        ["compress_all", 1],
+        ["res_x", 3],
+        ["res_x", 4],
+    ],
+    "scaling_factor": 1.0,
+    "norm_layer": "pixel_norm",
+    "patch_size": 4,
+    "latent_log_var": "uniform",
+    "use_quant_conv": False,
+    "causal_decoder": False,
+}
+
+
+diffusers_and_inferno_config_mapping = {
+    make_hashable_key(DIFFUSERS_SCHEDULER_CONFIG): OURS_SCHEDULER_CONFIG,
+    make_hashable_key(DIFFUSERS_TRANSFORMER_CONFIG): OURS_TRANSFORMER_CONFIG,
+    make_hashable_key(DIFFUSERS_VAE_CONFIG): OURS_VAE_CONFIG,
+}
+
+
+TRANSFORMER_KEYS_RENAME_DICT = {
+    "proj_in": "patchify_proj",
+    "time_embed": "adaln_single",
+    "norm_q": "q_norm",
+    "norm_k": "k_norm",
+}
+
+
+VAE_KEYS_RENAME_DICT = {
+    "decoder.up_blocks.3.conv_in": "decoder.up_blocks.7",
+    "decoder.up_blocks.3.upsamplers.0": "decoder.up_blocks.8",
+    "decoder.up_blocks.3": "decoder.up_blocks.9",
+    "decoder.up_blocks.2.upsamplers.0": "decoder.up_blocks.5",
+    "decoder.up_blocks.2.conv_in": "decoder.up_blocks.4",
+    "decoder.up_blocks.2": "decoder.up_blocks.6",
+    "decoder.up_blocks.1.upsamplers.0": "decoder.up_blocks.2",
+    "decoder.up_blocks.1": "decoder.up_blocks.3",
+    "decoder.up_blocks.0": "decoder.up_blocks.1",
+    "decoder.mid_block": "decoder.up_blocks.0",
+    "encoder.down_blocks.3": "encoder.down_blocks.8",
+    "encoder.down_blocks.2.downsamplers.0": "encoder.down_blocks.7",
+    "encoder.down_blocks.2": "encoder.down_blocks.6",
+    "encoder.down_blocks.1.downsamplers.0": "encoder.down_blocks.4",
+    "encoder.down_blocks.1.conv_out": "encoder.down_blocks.5",
+    "encoder.down_blocks.1": "encoder.down_blocks.3",
+    "encoder.down_blocks.0.conv_out": "encoder.down_blocks.2",
+    "encoder.down_blocks.0.downsamplers.0": "encoder.down_blocks.1",
+    "encoder.down_blocks.0": "encoder.down_blocks.0",
+    "encoder.mid_block": "encoder.down_blocks.9",
+    "conv_shortcut.conv": "conv_shortcut",
+    "resnets": "res_blocks",
+    "norm3": "norm3.norm",
+    "latents_mean": "per_channel_statistics.mean-of-means",
+    "latents_std": "per_channel_statistics.std-of-means",
+}
+
+ASPECT_RATIO_1024_BIN = {
+    "0.25": [512.0, 2048.0],
+    "0.28": [512.0, 1856.0],
+    "0.32": [576.0, 1792.0],
+    "0.33": [576.0, 1728.0],
+    "0.35": [576.0, 1664.0],
+    "0.4": [640.0, 1600.0],
+    "0.42": [640.0, 1536.0],
+    "0.48": [704.0, 1472.0],
+    "0.5": [704.0, 1408.0],
+    "0.52": [704.0, 1344.0],
+    "0.57": [768.0, 1344.0],
+    "0.6": [768.0, 1280.0],
+    "0.68": [832.0, 1216.0],
+    "0.72": [832.0, 1152.0],
+    "0.78": [896.0, 1152.0],
+    "0.82": [896.0, 1088.0],
+    "0.88": [960.0, 1088.0],
+    "0.94": [960.0, 1024.0],
+    "1.0": [1024.0, 1024.0],
+    "1.07": [1024.0, 960.0],
+    "1.13": [1088.0, 960.0],
+    "1.21": [1088.0, 896.0],
+    "1.29": [1152.0, 896.0],
+    "1.38": [1152.0, 832.0],
+    "1.46": [1216.0, 832.0],
+    "1.67": [1280.0, 768.0],
+    "1.75": [1344.0, 768.0],
+    "2.0": [1408.0, 704.0],
+    "2.09": [1472.0, 704.0],
+    "2.4": [1536.0, 640.0],
+    "2.5": [1600.0, 640.0],
+    "3.0": [1728.0, 576.0],
+    "4.0": [2048.0, 512.0],
+}
+
+ASPECT_RATIO_512_BIN = {
+    "0.25": [256.0, 1024.0],
+    "0.28": [256.0, 928.0],
+    "0.32": [288.0, 896.0],
+    "0.33": [288.0, 864.0],
+    "0.35": [288.0, 832.0],
+    "0.4": [320.0, 800.0],
+    "0.42": [320.0, 768.0],
+    "0.48": [352.0, 736.0],
+    "0.5": [352.0, 704.0],
+    "0.52": [352.0, 672.0],
+    "0.57": [384.0, 672.0],
+    "0.6": [384.0, 640.0],
+    "0.68": [416.0, 608.0],
+    "0.72": [416.0, 576.0],
+    "0.78": [448.0, 576.0],
+    "0.82": [448.0, 544.0],
+    "0.88": [480.0, 544.0],
+    "0.94": [480.0, 512.0],
+    "1.0": [512.0, 512.0],
+    "1.07": [512.0, 480.0],
+    "1.13": [544.0, 480.0],
+    "1.21": [544.0, 448.0],
+    "1.29": [576.0, 448.0],
+    "1.38": [576.0, 416.0],
+    "1.46": [608.0, 416.0],
+    "1.67": [640.0, 384.0],
+    "1.75": [672.0, 384.0],
+    "2.0": [704.0, 352.0],
+    "2.09": [736.0, 352.0],
+    "2.4": [768.0, 320.0],
+    "2.5": [800.0, 320.0],
+    "3.0": [864.0, 288.0],
+    "4.0": [1024.0, 256.0],
+}
 
 @torch.no_grad()
 def main(args):

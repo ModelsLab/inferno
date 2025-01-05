@@ -12,16 +12,17 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from model.patchifier import patchify, unpatchify
-from model.transformer import Attention
-from model.utils import TimestepEmbedding, Timesteps
+from patchifiers.patchify_ltx import patchify, unpatchify
+from attention.attention_ltx import Attention
+from embeddings.timestep_embeddings import PixArtAlphaCombinedTimestepSizeEmbeddings
 import logging
 from safetensors import safe_open
 from diffusers.models.autoencoders.vae import DecoderOutput
 from diffusers.models.modeling_outputs import AutoencoderKLOutput
 from diffusers import ConfigMixin, ModelMixin
+from blocks.normalization import PixelNorm, LayerNorm
 from diffusers.utils import logging
-from model.utils import (
+from utils.ltx_utils import (
     diffusers_and_inferno_config_mapping,
     make_hashable_key,
     VAE_KEYS_RENAME_DICT,
@@ -30,42 +31,6 @@ from model.utils import (
 PER_CHANNEL_STATISTICS_PREFIX = "per_channel_statistics."
 
 logger = logging.get_logger(__name__)
-
-class PixArtAlphaCombinedTimestepSizeEmbeddings(nn.Module):
-    """
-    For PixArt-Alpha.
-
-    Reference:
-    https://github.com/PixArt-alpha/PixArt-alpha/blob/0f55e922376d8b797edd44d25d0e7464b260dcab/diffusion/model/nets/PixArtMS.py#L164C9-L168C29
-    """
-
-    def __init__(self, embedding_dim, size_emb_dim, use_additional_conditions: bool = False):
-        super().__init__()
-
-        self.outdim = size_emb_dim
-        self.time_proj = Timesteps(num_channels=256, flip_sin_to_cos=True, downscale_freq_shift=0)
-        self.timestep_embedder = TimestepEmbedding(in_channels=256, time_embed_dim=embedding_dim)
-
-        self.use_additional_conditions = use_additional_conditions
-        if use_additional_conditions:
-            self.additional_condition_proj = Timesteps(num_channels=256, flip_sin_to_cos=True, downscale_freq_shift=0)
-            self.resolution_embedder = TimestepEmbedding(in_channels=256, time_embed_dim=size_emb_dim)
-            self.aspect_ratio_embedder = TimestepEmbedding(in_channels=256, time_embed_dim=size_emb_dim)
-
-    def forward(self, timestep, resolution, aspect_ratio, batch_size, hidden_dtype):
-        timesteps_proj = self.time_proj(timestep)
-        timesteps_emb = self.timestep_embedder(timesteps_proj.to(dtype=hidden_dtype))  # (N, D)
-
-        if self.use_additional_conditions:
-            resolution_emb = self.additional_condition_proj(resolution.flatten()).to(hidden_dtype)
-            resolution_emb = self.resolution_embedder(resolution_emb).reshape(batch_size, -1)
-            aspect_ratio_emb = self.additional_condition_proj(aspect_ratio.flatten()).to(hidden_dtype)
-            aspect_ratio_emb = self.aspect_ratio_embedder(aspect_ratio_emb).reshape(batch_size, -1)
-            conditioning = timesteps_emb + torch.cat([resolution_emb, aspect_ratio_emb], dim=1)
-        else:
-            conditioning = timesteps_emb
-
-        return conditioning
     
 class DualConv3d(nn.Module):
     def __init__(
@@ -351,15 +316,6 @@ def make_linear_nd(
         )
     else:
         raise ValueError(f"unsupported dimensions: {dims}")
-    
-class PixelNorm(nn.Module):
-    def __init__(self, dim=1, eps=1e-8):
-        super(PixelNorm, self).__init__()
-        self.dim = dim
-        self.eps = eps
-
-    def forward(self, x):
-        return x / torch.sqrt(torch.mean(x**2, dim=self.dim, keepdim=True) + self.eps)
 
 def randn_tensor(
     shape: Union[Tuple, List],
@@ -777,17 +733,6 @@ class AutoencoderKL(ModelMixin, ConfigMixin):
         dec = self.decode(z, target_shape=sample.shape).sample
 
         return DecoderOutput(sample=dec) if return_dict else (dec,)
-
-class LayerNorm(nn.Module):
-    def __init__(self, dim, eps, elementwise_affine=True) -> None:
-        super().__init__()
-        self.norm = nn.LayerNorm(dim, eps=eps, elementwise_affine=elementwise_affine)
-
-    def forward(self, x):
-        x = rearrange(x, "b c d h w -> b d h w c")
-        x = self.norm(x)
-        x = rearrange(x, "b d h w c -> b c d h w")
-        return x
 
 class LTXMidBlock3D(nn.Module):
     """

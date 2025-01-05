@@ -13,14 +13,13 @@ from PIL import Image
 from transformers import T5EncoderModel, T5Tokenizer
 from enum import Enum, auto
 
-from model.autoencoder import (
+from engine.model.autoencoders.autoencoder_kl_ltx import (
     CausalVideoAutoencoder,
 )
-from model.patchifier import Patchifier
-from model.transformer import Transformer3DModel
-from pipeline.ltx_infer_pipeline import LTXVideoPipeline
-from scheduler.scheduler import RectifiedFlowScheduler
-from pipeline.models import ConditioningMethod
+from engine.model.patchifiers.patchify_ltx import Patchifier
+from engine.model.transformers.transformer_ltx import LTXTransformer3DModel
+from engine.pipeline.ltx_video.ltx_pipeline import LTXVideoPipeline, ConditioningMethod
+from engine.model.schedulers.rectified_flow_scheduler import RectifiedFlowScheduler
 
 MAX_HEIGHT = 720
 MAX_WIDTH = 1280
@@ -328,7 +327,7 @@ def main():
 
     ckpt_path = Path(args.ckpt_path)
     vae = CausalVideoAutoencoder.from_pretrained(ckpt_path)
-    transformer = Transformer3DModel.from_pretrained(ckpt_path)
+    transformer = LTXTransformer3DModel.from_pretrained(ckpt_path)
     scheduler = RectifiedFlowScheduler.from_pretrained(ckpt_path)
 
     text_encoder = T5EncoderModel.from_pretrained(
