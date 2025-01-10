@@ -12,17 +12,17 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from patchifiers.patchify_ltx import patchify, unpatchify
-from attention.attention_ltx import Attention
-from embeddings.timestep_embeddings import PixArtAlphaCombinedTimestepSizeEmbeddings
+from ..patchifiers.patchify_ltx import patchify, unpatchify
+from ..attention.attention_ltx import Attention
+from ..embeddings.timestep_embeddings import PixArtAlphaCombinedTimestepSizeEmbeddings
 import logging
 from safetensors import safe_open
 from diffusers.models.autoencoders.vae import DecoderOutput
 from diffusers.models.modeling_outputs import AutoencoderKLOutput
 from diffusers import ConfigMixin, ModelMixin
-from blocks.normalization import PixelNorm, LayerNorm
+from ..blocks.normalization import PixelNorm, LayerNorm
 from diffusers.utils import logging
-from utils.ltx_utils import (
+from ...utils.ltx_utils import (
     diffusers_and_inferno_config_mapping,
     make_hashable_key,
     VAE_KEYS_RENAME_DICT,

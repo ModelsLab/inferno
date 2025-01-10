@@ -3,12 +3,12 @@ import inspect
 from typing import Optional, Tuple
 from einops import rearrange
 import torch
-from utils.ltx_utils import SkipLayerStrategy
+from ...utils.ltx_utils import SkipLayerStrategy
 import kernels.ltx_video.q8_kernels.functional as Q8F
 import torch.nn as nn
 import torch.nn.functional as F
-from blocks.normalization import RMSNorm, SpatialNorm
-from utils.ltx_utils import maybe_allow_in_graph
+from ..blocks.normalization import RMSNorm, SpatialNorm
+from ...utils.ltx_utils import maybe_allow_in_graph
 
 try:
     from torch_xla.experimental.custom_kernel import flash_attention

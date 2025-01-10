@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 from contextlib import nullcontext
 from diffusers.image_processor import VaeImageProcessor
-from model.autoencoders.autoencoder_kl_ltx import AutoencoderKL
+from ...model.autoencoders.autoencoder_kl_ltx import AutoencoderKL
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline, ImagePipelineOutput
 from diffusers.schedulers import DPMSolverMultistepScheduler
 from diffusers.utils import (
@@ -24,15 +24,15 @@ from diffusers.utils.torch_utils import randn_tensor
 from einops import rearrange
 from transformers import T5EncoderModel, T5Tokenizer
 
-from model.transformers.transformer_ltx import LTXTransformer3DModel
-from model.patchifiers.patchify_ltx import BasePatchifier
+from ...model.transformers.transformer_ltx import LTXTransformer3DModel
+from ...model.patchifiers.patchify_ltx import BasePatchifier
 from .ltx_blocks import (
     get_vae_size_scale_factor,
     vae_decode,
     vae_encode,
 )
-from model.autoencoders.autoencoder_kl_ltx import CausalVideoAutoencoder
-from model.schedulers.rectified_flow_scheduler import TimestepShifter
+from ...model.autoencoders.autoencoder_kl_ltx import CausalVideoAutoencoder
+from ...model.schedulers.rectified_flow_scheduler import TimestepShifter
 from enum import Enum
 
 

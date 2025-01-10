@@ -16,10 +16,10 @@ from enum import Enum, auto
 from engine.model.autoencoders.autoencoder_kl_ltx import (
     CausalVideoAutoencoder,
 )
-from engine.model.patchifiers.patchify_ltx import Patchifier
-from engine.model.transformers.transformer_ltx import LTXTransformer3DModel
-from engine.pipeline.ltx_video.ltx_pipeline import LTXVideoPipeline, ConditioningMethod
-from engine.model.schedulers.rectified_flow_scheduler import RectifiedFlowScheduler
+from ...engine.model.patchifiers.patchify_ltx import Patchifier
+from ...engine.model.transformers.transformer_ltx import LTXTransformer3DModel
+from ...engine.pipeline.ltx_video.ltx_pipeline import LTXVideoPipeline, ConditioningMethod
+from ...engine.model.schedulers.rectified_flow_scheduler import RectifiedFlowScheduler
 
 MAX_HEIGHT = 720
 MAX_WIDTH = 1280

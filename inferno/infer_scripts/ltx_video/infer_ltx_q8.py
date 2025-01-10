@@ -2,7 +2,7 @@ from diffusers import LTXPipeline, LTXVideoTransformer3DModel
 from huggingface_hub import hf_hub_download
 import argparse
 import os
-from engine.utils.ltx_utils import check_transformer_replaced_correctly, replace_gelu, replace_linear, replace_rms_norm
+from ...engine.utils.ltx_utils import check_transformer_replaced_correctly, replace_gelu, replace_linear, replace_rms_norm
 import safetensors.torch
 from kernels.ltx_video.q8_kernels.graph.graph import make_dynamic_graphed_callable
 import torch

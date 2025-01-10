@@ -6,7 +6,7 @@ from diffusers.models.normalization import RMSNorm
 from kernels.ltx_video.q8_kernels.modules.activations import GELU as QGELU
 from diffusers.models.activations import GELU
 from kernels.ltx_video.q8_kernels.modules.linear import Q8Linear
-from model.attention.attention_ltx import LTXVideoQ8AttentionProcessor
+from ..model.attention.attention_ltx import LTXVideoQ8AttentionProcessor
 import argparse
 from diffusers import LTXVideoTransformer3DModel
 from kernels.ltx_video.q8_kernels.functional.quantizer import quantize

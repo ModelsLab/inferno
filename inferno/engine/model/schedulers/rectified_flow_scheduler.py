@@ -12,7 +12,7 @@ from torch import Tensor
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.schedulers.scheduling_utils import SchedulerMixin
 
-from utils.ltx_utils import append_dims, make_hashable_key, diffusers_and_inferno_config_mapping
+from ...utils.ltx_utils import append_dims, make_hashable_key, diffusers_and_inferno_config_mapping
 
 
 def simple_diffusion_resolution_dependent_timestep_shift(

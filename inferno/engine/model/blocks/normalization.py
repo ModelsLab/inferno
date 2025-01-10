@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from embeddings.timestep_embeddings import PixArtAlphaCombinedTimestepSizeEmbeddings
+from ..embeddings.timestep_embeddings import PixArtAlphaCombinedTimestepSizeEmbeddings
 
 class LayerNorm(nn.Module):
     def __init__(self, dim, eps, elementwise_affine=True) -> None:
